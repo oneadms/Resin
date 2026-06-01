@@ -6,6 +6,7 @@ import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { Switch } from "../../components/ui/Switch";
+import { Select } from "../../components/ui/Select";
 import { Textarea } from "../../components/ui/Textarea";
 import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
@@ -15,6 +16,7 @@ import { getEnvConfig, patchSystemConfig, getSystemConfig, getDefaultSystemConfi
 import type { RuntimeConfig, RuntimeConfigPatch } from "./types";
 
 type RuntimeConfigForm = {
+  reverse_proxy_outbound_ip_version: string;
   request_log_enabled: boolean;
   reverse_proxy_log_detail_enabled: boolean;
   reverse_proxy_log_req_headers_max_bytes: string;
@@ -34,6 +36,7 @@ type RuntimeConfigForm = {
 };
 
 const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
+  "reverse_proxy_outbound_ip_version",
   "request_log_enabled",
   "reverse_proxy_log_detail_enabled",
   "reverse_proxy_log_req_headers_max_bytes",
@@ -53,6 +56,7 @@ const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
 ];
 
 const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
+  reverse_proxy_outbound_ip_version: "反向代理出站 IP 版本",
   request_log_enabled: "启用请求日志",
   reverse_proxy_log_detail_enabled: "记录详细反代日志",
   reverse_proxy_log_req_headers_max_bytes: "请求头最大字节数",
@@ -69,6 +73,11 @@ const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
   latency_decay_window: "历史延迟衰减窗口",
   cache_flush_interval: "缓存异步刷盘间隔",
   cache_flush_dirty_threshold: "缓存刷盘脏阈值",
+};
+
+const REVERSE_PROXY_OUTBOUND_IP_VERSION_LABELS: Record<string, string> = {
+  AUTO: "自动（IPv4/IPv6）",
+  IPV4_ONLY: "仅 IPv4（禁用 IPv6）",
 };
 
 const ALLOCATION_POLICY_LABELS: Record<string, string> = {
@@ -90,6 +99,7 @@ const EMPTY_ACCOUNT_BEHAVIOR_LABELS: Record<string, string> = {
 
 function configToForm(config: RuntimeConfig): RuntimeConfigForm {
   return {
+    reverse_proxy_outbound_ip_version: config.reverse_proxy_outbound_ip_version,
     request_log_enabled: config.request_log_enabled,
     reverse_proxy_log_detail_enabled: config.reverse_proxy_log_detail_enabled,
     reverse_proxy_log_req_headers_max_bytes: String(config.reverse_proxy_log_req_headers_max_bytes),
@@ -152,6 +162,7 @@ function parseForm(form: RuntimeConfigForm): RuntimeConfig {
   }
 
   return {
+    reverse_proxy_outbound_ip_version: form.reverse_proxy_outbound_ip_version,
     request_log_enabled: form.request_log_enabled,
     reverse_proxy_log_detail_enabled: form.reverse_proxy_log_detail_enabled,
     reverse_proxy_log_req_headers_max_bytes: parseNonNegativeInt(
@@ -573,6 +584,23 @@ export function SystemConfigPage() {
               <section className="syscfg-section">
                 <h4>{t("探测与路由")}</h4>
                 <div className="form-grid">
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-reverse-proxy-ip-version" style={{ margin: 0 }}>
+                        {t("反向代理出站 IP 版本")}
+                      </label>
+                      {renderRestoreButton("reverse_proxy_outbound_ip_version")}
+                    </div>
+                    <Select
+                      id="sys-reverse-proxy-ip-version"
+                      value={form.reverse_proxy_outbound_ip_version}
+                      onChange={(event) => setFormField("reverse_proxy_outbound_ip_version", event.target.value)}
+                    >
+                      <option value="AUTO">{t(REVERSE_PROXY_OUTBOUND_IP_VERSION_LABELS.AUTO)}</option>
+                      <option value="IPV4_ONLY">{t(REVERSE_PROXY_OUTBOUND_IP_VERSION_LABELS.IPV4_ONLY)}</option>
+                    </Select>
+                  </div>
+
                   <div className="field-group field-span-2">
                     <div style={{ display: "flex", alignItems: "center" }}>
                       <label className="field-label" htmlFor="sys-latency-url" style={{ margin: 0 }}>

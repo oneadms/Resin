@@ -1,10 +1,46 @@
 package config
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+type ReverseProxyOutboundIPVersion string
+
+const (
+	ReverseProxyOutboundIPVersionAuto     ReverseProxyOutboundIPVersion = "AUTO"
+	ReverseProxyOutboundIPVersionIPv4Only ReverseProxyOutboundIPVersion = "IPV4_ONLY"
+)
+
+func NormalizeReverseProxyOutboundIPVersion(raw string) ReverseProxyOutboundIPVersion {
+	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "", string(ReverseProxyOutboundIPVersionAuto):
+		return ReverseProxyOutboundIPVersionAuto
+	case string(ReverseProxyOutboundIPVersionIPv4Only):
+		return ReverseProxyOutboundIPVersionIPv4Only
+	default:
+		return ""
+	}
+}
+
+func NormalizeRuntimeConfig(cfg *RuntimeConfig) *RuntimeConfig {
+	if cfg == nil {
+		return NewDefaultRuntimeConfig()
+	}
+	ipVersion := NormalizeReverseProxyOutboundIPVersion(cfg.ReverseProxyOutboundIPVersion)
+	if ipVersion == "" {
+		ipVersion = ReverseProxyOutboundIPVersionAuto
+	}
+	cfg.ReverseProxyOutboundIPVersion = string(ipVersion)
+	return cfg
+}
 
 // RuntimeConfig holds all hot-updatable global settings.
 // These are persisted in the database and served via GET /system/config.
 type RuntimeConfig struct {
+	// Proxy
+	ReverseProxyOutboundIPVersion string `json:"reverse_proxy_outbound_ip_version"`
+
 	// Request log
 	RequestLogEnabled                  bool `json:"request_log_enabled"`
 	ReverseProxyLogDetailEnabled       bool `json:"reverse_proxy_log_detail_enabled"`
@@ -36,6 +72,8 @@ type RuntimeConfig struct {
 // values specified in DESIGN.md §运行时全局设置项.
 func NewDefaultRuntimeConfig() *RuntimeConfig {
 	return &RuntimeConfig{
+		ReverseProxyOutboundIPVersion: string(ReverseProxyOutboundIPVersionAuto),
+
 		RequestLogEnabled:                  true,
 		ReverseProxyLogDetailEnabled:       false,
 		ReverseProxyLogReqHeadersMaxBytes:  4096,

@@ -9,6 +9,9 @@ import (
 func TestNewDefaultRuntimeConfig(t *testing.T) {
 	cfg := NewDefaultRuntimeConfig()
 
+	if cfg.ReverseProxyOutboundIPVersion != string(ReverseProxyOutboundIPVersionAuto) {
+		t.Errorf("ReverseProxyOutboundIPVersion: got %q, want %q", cfg.ReverseProxyOutboundIPVersion, ReverseProxyOutboundIPVersionAuto)
+	}
 	if cfg.RequestLogEnabled != true {
 		t.Errorf("RequestLogEnabled: got %v, want true", cfg.RequestLogEnabled)
 	}
@@ -89,6 +92,7 @@ func TestRuntimeConfig_JSONFieldNames(t *testing.T) {
 
 	// Check that JSON keys match the DESIGN.md GET /system/config response
 	expectedKeys := []string{
+		"reverse_proxy_outbound_ip_version",
 		"request_log_enabled",
 		"reverse_proxy_log_detail_enabled",
 		"reverse_proxy_log_req_headers_max_bytes",

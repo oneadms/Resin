@@ -178,6 +178,40 @@ func TestValidateRuntimeConfig_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeConfig_ReverseProxyOutboundIPVersion(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		want      string
+		wantError bool
+	}{
+		{name: "auto", value: "AUTO", want: "AUTO"},
+		{name: "ipv4 only", value: "IPV4_ONLY", want: "IPV4_ONLY"},
+		{name: "normalizes lowercase", value: " ipv4_only ", want: "IPV4_ONLY"},
+		{name: "invalid", value: "IPV6_ONLY", wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := newDefaultCfg()
+			cfg.ReverseProxyOutboundIPVersion = tt.value
+			err := validateRuntimeConfig(cfg)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateRuntimeConfig returned error: %v", err)
+			}
+			if cfg.ReverseProxyOutboundIPVersion != tt.want {
+				t.Fatalf("ReverseProxyOutboundIPVersion: got %q, want %q", cfg.ReverseProxyOutboundIPVersion, tt.want)
+			}
+		})
+	}
+}
+
 func TestRuntimeConfigPatchAllowlist_StaysInSyncWithRuntimeConfigJSONFields(t *testing.T) {
 	rt := reflect.TypeOf(config.RuntimeConfig{})
 	jsonFields := make(map[string]struct{})

@@ -1,4 +1,7 @@
+export type ReverseProxyOutboundIPVersion = "AUTO" | "IPV4_ONLY";
+
 export type RuntimeConfig = {
+  reverse_proxy_outbound_ip_version: ReverseProxyOutboundIPVersion | string;
   request_log_enabled: boolean;
   reverse_proxy_log_detail_enabled: boolean;
   reverse_proxy_log_req_headers_max_bytes: number;

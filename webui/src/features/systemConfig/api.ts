@@ -4,6 +4,7 @@ import type { EnvConfig, RuntimeConfig, RuntimeConfigPatch } from "./types";
 const path = "/api/v1/system/config";
 
 const DEFAULT_CONFIG: RuntimeConfig = {
+  reverse_proxy_outbound_ip_version: "AUTO",
   request_log_enabled: true,
   reverse_proxy_log_detail_enabled: false,
   reverse_proxy_log_req_headers_max_bytes: 0,
@@ -37,12 +38,24 @@ function asString(raw: unknown, fallback: string): string {
   return raw;
 }
 
+function normalizeReverseProxyOutboundIPVersion(raw: unknown): RuntimeConfig["reverse_proxy_outbound_ip_version"] {
+  if (typeof raw !== "string") {
+    return DEFAULT_CONFIG.reverse_proxy_outbound_ip_version;
+  }
+  const value = raw.trim().toUpperCase();
+  if (value === "IPV4_ONLY") {
+    return "IPV4_ONLY";
+  }
+  return "AUTO";
+}
+
 function normalizeRuntimeConfig(raw: Partial<RuntimeConfig> | null | undefined): RuntimeConfig {
   if (!raw) {
     return DEFAULT_CONFIG;
   }
 
   return {
+    reverse_proxy_outbound_ip_version: normalizeReverseProxyOutboundIPVersion(raw.reverse_proxy_outbound_ip_version),
     request_log_enabled: Boolean(raw.request_log_enabled),
     reverse_proxy_log_detail_enabled: Boolean(raw.reverse_proxy_log_detail_enabled),
     reverse_proxy_log_req_headers_max_bytes: asNumber(

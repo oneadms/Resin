@@ -60,6 +60,7 @@ type ControlPlaneService struct {
 	MatcherRuntime *proxy.AccountMatcherRuntime
 	RuntimeCfg     *atomic.Pointer[config.RuntimeConfig]
 	EnvCfg         *config.EnvConfig
+	OnRuntimeConfigUpdated func(oldCfg, newCfg *config.RuntimeConfig)
 
 	configMu      sync.Mutex
 	configVersion int
@@ -71,6 +72,7 @@ type ControlPlaneService struct {
 
 // runtimeConfigAllowedFields is the set of JSON field names that can be patched.
 var runtimeConfigAllowedFields = map[string]bool{
+	"reverse_proxy_outbound_ip_version":       true,
 	"request_log_enabled":                      true,
 	"reverse_proxy_log_detail_enabled":         true,
 	"reverse_proxy_log_req_headers_max_bytes":  true,
@@ -155,7 +157,8 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	defer s.configMu.Unlock()
 
 	// 3. Deep-copy current config → apply patch.
-	newCfg := copyRuntimeConfig(s.RuntimeCfg.Load())
+	oldCfg := copyRuntimeConfig(s.RuntimeCfg.Load())
+	newCfg := copyRuntimeConfig(oldCfg)
 	if verr := parseRuntimeConfigPatch(patchJSON, newCfg); verr != nil {
 		return nil, verr
 	}
@@ -186,11 +189,24 @@ func (s *ControlPlaneService) PatchRuntimeConfig(patchJSON json.RawMessage) (*co
 	// 6. Atomic swap.
 	s.RuntimeCfg.Store(newCfg)
 	s.configVersion = newVersion
+	if s.OnRuntimeConfigUpdated != nil {
+		s.OnRuntimeConfigUpdated(oldCfg, newCfg)
+	}
 
 	return newCfg, nil
 }
 
 func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
+	if ipVersion := config.NormalizeReverseProxyOutboundIPVersion(cfg.ReverseProxyOutboundIPVersion); ipVersion == "" {
+		return invalidArg(fmt.Sprintf(
+			"reverse_proxy_outbound_ip_version: invalid value %q (allowed: %s, %s)",
+			cfg.ReverseProxyOutboundIPVersion,
+			config.ReverseProxyOutboundIPVersionAuto,
+			config.ReverseProxyOutboundIPVersionIPv4Only,
+		))
+	} else {
+		cfg.ReverseProxyOutboundIPVersion = string(ipVersion)
+	}
 	latencyURL := strings.TrimSpace(cfg.LatencyTestURL)
 	u, verr := parseHTTPAbsoluteURL("latency_test_url", latencyURL)
 	if verr != nil {

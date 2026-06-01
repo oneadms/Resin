@@ -1,0 +1,1 @@
+ALTER TABLE nodes_dynamic ADD COLUMN manual_disabled INTEGER NOT NULL DEFAULT 0;

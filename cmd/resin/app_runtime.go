@@ -44,8 +44,10 @@ type resinApp struct {
 		Serve(net.Listener) error
 		Shutdown(context.Context) error
 	}
-	inboundLn     net.Listener
-	transportPool *proxy.OutboundTransportPool
+	inboundLn            net.Listener
+	forwardTransportPool *proxy.OutboundTransportPool
+	reverseTransportPool *proxy.OutboundTransportPool
+	reverseProxy         *proxy.ReverseProxy
 }
 
 func run() error {
@@ -134,8 +136,11 @@ func (a *resinApp) initTopologyRuntime(engine *state.StateEngine) (*netutil.Retr
 		retryDL,
 		a.onProbeConnectionLifecycle,
 		func(hash node.Hash) {
-			if a.transportPool != nil {
-				a.transportPool.Evict(hash)
+			if a.forwardTransportPool != nil {
+				a.forwardTransportPool.Evict(hash)
+			}
+			if a.reverseTransportPool != nil {
+				a.reverseTransportPool.Evict(hash)
 			}
 		},
 	)
@@ -356,6 +361,30 @@ func (a *resinApp) startBackgroundServices() {
 	log.Println("Subscription scheduler started; forced full refresh running in background (batch 3)")
 }
 
+func reverseProxyDialNetwork(ipVersion string) string {
+	if config.NormalizeReverseProxyOutboundIPVersion(ipVersion) == config.ReverseProxyOutboundIPVersionIPv4Only {
+		return "tcp4"
+	}
+	return "tcp"
+}
+
+func (a *resinApp) reverseProxyDialNetwork() string {
+	return reverseProxyDialNetwork(runtimeConfigSnapshot(a.runtimeCfg).ReverseProxyOutboundIPVersion)
+}
+
+func (a *resinApp) closeReverseProxyIdleConnectionsOnIPVersionChange(oldCfg, newCfg *config.RuntimeConfig) {
+	if config.NormalizeReverseProxyOutboundIPVersion(oldCfg.ReverseProxyOutboundIPVersion) ==
+		config.NormalizeReverseProxyOutboundIPVersion(newCfg.ReverseProxyOutboundIPVersion) {
+		return
+	}
+	if a.reverseTransportPool != nil {
+		a.reverseTransportPool.CloseAll()
+	}
+	if a.reverseProxy != nil {
+		a.reverseProxy.CloseDirectIdleConnections()
+	}
+}
+
 func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 	startedAt := time.Now().UTC()
 	systemInfo := service.SystemInfo{
@@ -366,16 +395,17 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 	}
 
 	cpService := &service.ControlPlaneService{
-		RuntimeCfg:     a.runtimeCfg,
-		EnvCfg:         a.envCfg,
-		Engine:         engine,
-		Pool:           a.topoRuntime.pool,
-		SubMgr:         a.topoRuntime.subManager,
-		Scheduler:      a.topoRuntime.scheduler,
-		Router:         a.topoRuntime.router,
-		ProbeMgr:       a.topoRuntime.probeMgr,
-		GeoIP:          a.geoSvc,
-		MatcherRuntime: a.accountMatcher,
+		RuntimeCfg:              a.runtimeCfg,
+		EnvCfg:                  a.envCfg,
+		Engine:                  engine,
+		Pool:                    a.topoRuntime.pool,
+		SubMgr:                  a.topoRuntime.subManager,
+		Scheduler:               a.topoRuntime.scheduler,
+		Router:                  a.topoRuntime.router,
+		ProbeMgr:                a.topoRuntime.probeMgr,
+		GeoIP:                   a.geoSvc,
+		MatcherRuntime:          a.accountMatcher,
+		OnRuntimeConfigUpdated: a.closeReverseProxyIdleConnectionsOnIPVersionChange,
 	}
 
 	apiSrv := api.NewServerWithAddress(
@@ -402,8 +432,13 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		MaxIdleConnsPerHost: a.envCfg.ProxyTransportMaxIdleConnsPerHost,
 		IdleConnTimeout:     a.envCfg.ProxyTransportIdleConnTimeout,
 	}
-	if a.transportPool == nil {
-		a.transportPool = proxy.NewOutboundTransportPool(outboundTransportCfg)
+	reverseTransportCfg := outboundTransportCfg
+	reverseTransportCfg.DialNetwork = a.reverseProxyDialNetwork
+	if a.forwardTransportPool == nil {
+		a.forwardTransportPool = proxy.NewOutboundTransportPool(outboundTransportCfg)
+	}
+	if a.reverseTransportPool == nil {
+		a.reverseTransportPool = proxy.NewOutboundTransportPool(reverseTransportCfg)
 	}
 
 	forwardProxy := proxy.NewForwardProxy(proxy.ForwardProxyConfig{
@@ -415,7 +450,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		Events:            proxyEvents,
 		MetricsSink:       a.metricsManager,
 		OutboundTransport: outboundTransportCfg,
-		TransportPool:     a.transportPool,
+		TransportPool:     a.forwardTransportPool,
 		ProxyBypassRules:  a.envCfg.ProxyBypassRules,
 	})
 
@@ -429,10 +464,11 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		Matcher:           a.accountMatcher,
 		Events:            proxyEvents,
 		MetricsSink:       a.metricsManager,
-		OutboundTransport: outboundTransportCfg,
-		TransportPool:     a.transportPool,
+		OutboundTransport: reverseTransportCfg,
+		TransportPool:     a.reverseTransportPool,
 		ProxyBypassRules:  a.envCfg.ProxyBypassRules,
 	})
+	a.reverseProxy = reverseProxy
 	socks5Inbound := proxy.NewSocks5Inbound(proxy.Socks5InboundConfig{
 		ProxyToken:       a.envCfg.ProxyToken,
 		AuthVersion:      string(a.envCfg.AuthVersion),
@@ -540,9 +576,13 @@ func (a *resinApp) shutdown(ctx context.Context) {
 		log.Printf("Server shutdown error: %v", err)
 	}
 	log.Println("Resin server stopped")
-	if a.transportPool != nil {
-		a.transportPool.CloseAll()
-		log.Println("Outbound transport pool closed")
+	if a.forwardTransportPool != nil {
+		a.forwardTransportPool.CloseAll()
+		log.Println("Forward outbound transport pool closed")
+	}
+	if a.reverseTransportPool != nil {
+		a.reverseTransportPool.CloseAll()
+		log.Println("Reverse outbound transport pool closed")
 	}
 
 	// Stop in order: event sources first, then sinks, then persistence.

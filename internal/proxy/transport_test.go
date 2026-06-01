@@ -94,6 +94,53 @@ func TestOutboundTransportPool_AppliesConfiguredLimits(t *testing.T) {
 	}
 }
 
+type recordingOutbound struct {
+	adapter.Outbound
+	networks []string
+}
+
+func (r *recordingOutbound) DialContext(_ context.Context, network string, _ M.Socksaddr) (net.Conn, error) {
+	r.networks = append(r.networks, network)
+	return nil, errors.New("dial stopped")
+}
+
+func TestOutboundTransportPool_DialNetworkUsesConfig(t *testing.T) {
+	ob := &recordingOutbound{}
+	pool := newOutboundTransportPoolWithConfig(OutboundTransportConfig{
+		DialNetwork: func() string { return "tcp4" },
+	})
+	transport := pool.Get(node.Hash{1}, ob, nil)
+
+	_, _ = transport.DialContext(context.Background(), "tcp", "example.com:443")
+
+	if len(ob.networks) != 1 || ob.networks[0] != "tcp4" {
+		t.Fatalf("dial networks: got %v, want [tcp4]", ob.networks)
+	}
+}
+
+func TestOutboundTransportPool_DialNetworkReadsLatestValue(t *testing.T) {
+	network := "tcp"
+	ob := &recordingOutbound{}
+	pool := newOutboundTransportPoolWithConfig(OutboundTransportConfig{
+		DialNetwork: func() string { return network },
+	})
+	transport := pool.Get(node.Hash{1}, ob, nil)
+
+	_, _ = transport.DialContext(context.Background(), "tcp", "example.com:443")
+	network = "tcp4"
+	_, _ = transport.DialContext(context.Background(), "tcp", "example.com:443")
+
+	want := []string{"tcp", "tcp4"}
+	if len(ob.networks) != len(want) {
+		t.Fatalf("dial networks: got %v, want %v", ob.networks, want)
+	}
+	for i := range want {
+		if ob.networks[i] != want[i] {
+			t.Fatalf("dial networks: got %v, want %v", ob.networks, want)
+		}
+	}
+}
+
 func TestOutboundTransportPool_CloseAllClearsEntries(t *testing.T) {
 	pool := newOutboundTransportPool()
 	ob := &noopOutbound{}

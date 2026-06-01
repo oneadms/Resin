@@ -117,6 +117,18 @@ func (p *ReverseProxy) directHTTPTransport() *http.Transport {
 	return p.directTransport
 }
 
+func (p *ReverseProxy) CloseDirectIdleConnections() {
+	if p == nil {
+		return
+	}
+	p.directOnce.Do(func() {
+		p.directTransport = newDirectHTTPTransport(p.transportConfig, p.metricsSink)
+	})
+	if p.directTransport != nil {
+		p.directTransport.CloseIdleConnections()
+	}
+}
+
 // parsedPath holds the result of parsing a reverse proxy request path.
 type parsedPath struct {
 	PlatformName string

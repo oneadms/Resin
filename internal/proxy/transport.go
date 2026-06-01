@@ -16,6 +16,7 @@ type OutboundTransportConfig struct {
 	MaxIdleConns        int
 	MaxIdleConnsPerHost int
 	IdleConnTimeout     time.Duration
+	DialNetwork         func() string
 }
 
 const (
@@ -35,6 +36,16 @@ func normalizeOutboundTransportConfig(cfg OutboundTransportConfig) OutboundTrans
 		cfg.IdleConnTimeout = defaultTransportIdleConnTimeout
 	}
 	return cfg
+}
+
+func transportDialNetwork(cfg OutboundTransportConfig, fallback string) string {
+	if cfg.DialNetwork == nil {
+		return fallback
+	}
+	if network := cfg.DialNetwork(); network != "" {
+		return network
+	}
+	return fallback
 }
 
 // OutboundTransportPool manages reusable outbound HTTP transports keyed by node hash.
@@ -96,7 +107,8 @@ func (p *OutboundTransportPool) CloseAll() {
 func (p *OutboundTransportPool) newReusableOutboundTransport(ob adapter.Outbound, sink MetricsEventSink) *http.Transport {
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := ob.DialContext(ctx, network, M.ParseSocksaddr(addr))
+			dialNetwork := transportDialNetwork(p.config, network)
+			conn, err := ob.DialContext(ctx, dialNetwork, M.ParseSocksaddr(addr))
 			if err != nil {
 				return nil, err
 			}
@@ -119,7 +131,8 @@ func newDirectHTTPTransport(cfg OutboundTransportConfig, sink MetricsEventSink) 
 	dialer := &net.Dialer{}
 	return &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := dialer.DialContext(ctx, network, addr)
+			dialNetwork := transportDialNetwork(cfg, network)
+			conn, err := dialer.DialContext(ctx, dialNetwork, addr)
 			if err != nil {
 				return nil, err
 			}
