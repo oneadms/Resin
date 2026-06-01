@@ -449,7 +449,7 @@ func (m *ProbeManager) scanEgress() {
 		default:
 		}
 
-		if entry.IsDisabledBySubscriptions(subLookup) {
+		if entry.IsDisabled(subLookup) {
 			return true // disabled node -> skip periodic probe
 		}
 
@@ -497,7 +497,7 @@ func (m *ProbeManager) scanLatency() {
 		default:
 		}
 
-		if entry.IsDisabledBySubscriptions(subLookup) {
+		if entry.IsDisabled(subLookup) {
 			return true // disabled node -> skip periodic probe
 		}
 
@@ -537,7 +537,7 @@ func (m *ProbeManager) executeTask(task probeTask) {
 	if !ok || entry.Outbound.Load() == nil {
 		return
 	}
-	if entry.IsDisabledBySubscriptions(m.pool.MakeSubLookup()) {
+	if entry.IsDisabled(m.pool.MakeSubLookup()) {
 		return
 	}
 

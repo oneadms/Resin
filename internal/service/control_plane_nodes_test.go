@@ -298,6 +298,121 @@ func TestGetNode_ReferenceLatencyMsUsesAuthorityAverage(t *testing.T) {
 	}
 }
 
+func TestGetNode_ManualDisabledAffectsSummaryAndEnabledFilter(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	hash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"1.1.1.1","port":443}`),
+		"203.0.113.30",
+	)
+	pool.SetNodeManualDisabled(hash, true)
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		GeoIP:  &geoip.Service{},
+	}
+
+	got, err := cp.GetNode(hash.Hex())
+	if err != nil {
+		t.Fatalf("GetNode: %v", err)
+	}
+	if !got.ManualDisabled {
+		t.Fatal("manual_disabled should be true")
+	}
+	if got.Enabled {
+		t.Fatal("enabled should be false when manually disabled")
+	}
+
+	enabled := true
+	nodes, err := cp.ListNodes(NodeFilters{Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("ListNodes(enabled=true): %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("enabled=true nodes len = %d, want 0", len(nodes))
+	}
+
+	enabled = false
+	nodes, err = cp.ListNodes(NodeFilters{Enabled: &enabled})
+	if err != nil {
+		t.Fatalf("ListNodes(enabled=false): %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeHash != hash.Hex() {
+		t.Fatalf("enabled=false nodes = %+v, want %s", nodes, hash.Hex())
+	}
+}
+
+func TestUpdateNode_ManualDisabled(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	hash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"1.1.1.1","port":443}`),
+		"203.0.113.30",
+	)
+
+	cp := &ControlPlaneService{
+		Pool:   pool,
+		SubMgr: subMgr,
+		GeoIP:  &geoip.Service{},
+	}
+
+	got, err := cp.UpdateNode(hash.Hex(), []byte(`{"manual_disabled":true}`))
+	if err != nil {
+		t.Fatalf("UpdateNode(disable): %v", err)
+	}
+	if !got.ManualDisabled || got.Enabled {
+		t.Fatalf("disabled summary = %+v, want manual_disabled=true enabled=false", got)
+	}
+	if !pool.IsNodeDisabled(hash) {
+		t.Fatal("pool should report manually disabled node as disabled")
+	}
+
+	got, err = cp.UpdateNode(hash.Hex(), []byte(`{"manual_disabled":false}`))
+	if err != nil {
+		t.Fatalf("UpdateNode(enable): %v", err)
+	}
+	if got.ManualDisabled || !got.Enabled {
+		t.Fatalf("enabled summary = %+v, want manual_disabled=false enabled=true", got)
+	}
+}
+
+func TestUpdateNode_RejectsInvalidPatch(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+	hash := addRoutableNodeForSubscription(t, pool, sub, []byte(`{"type":"ss","server":"1.1.1.1","port":443}`), "203.0.113.30")
+
+	cp := &ControlPlaneService{Pool: pool, SubMgr: subMgr, GeoIP: &geoip.Service{}}
+
+	for _, patch := range [][]byte{
+		[]byte(`{}`),
+		[]byte(`{"manual_disabled":null}`),
+		[]byte(`{"manual_disabled":"true"}`),
+		[]byte(`{"enabled":false}`),
+	} {
+		if _, err := cp.UpdateNode(hash.Hex(), patch); err == nil {
+			t.Fatalf("UpdateNode(%s) expected error", patch)
+		}
+	}
+}
+
 func TestListNodes_ProbedSinceUsesLastLatencyProbeAttempt(t *testing.T) {
 	subMgr := topology.NewSubscriptionManager()
 	pool := newNodeListTestPool(subMgr)

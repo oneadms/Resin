@@ -214,6 +214,38 @@ func TestNodeEntry_IsDisabledBySubscriptions_AllDisabledOrMissing(t *testing.T) 
 	}
 }
 
+func TestNodeEntry_IsDisabledIncludesManualOverride(t *testing.T) {
+	h := HashFromRawOptions([]byte(`{"type":"ss"}`))
+	e := NewNodeEntry(h, nil, time.Now(), 0)
+	e.AddSubscriptionID("sub-enabled")
+
+	lookup := func(subID string, hash Hash) (string, bool, []string, bool) {
+		return "SubEnabled", true, []string{"node-a"}, true
+	}
+
+	if e.IsDisabled(lookup) {
+		t.Fatal("enabled subscription without manual override should not be disabled")
+	}
+	if !e.SetManualDisabled(true) {
+		t.Fatal("first manual disable should report state change")
+	}
+	if !e.IsManuallyDisabled() {
+		t.Fatal("manual disabled state should be true")
+	}
+	if !e.IsDisabled(lookup) {
+		t.Fatal("manual override should make node effectively disabled")
+	}
+	if e.SetManualDisabled(true) {
+		t.Fatal("setting same manual disabled value should not report state change")
+	}
+	if !e.SetManualDisabled(false) {
+		t.Fatal("manual re-enable should report state change")
+	}
+	if e.IsDisabled(lookup) {
+		t.Fatal("re-enabled node with enabled subscription should not be disabled")
+	}
+}
+
 func TestNodeEntry_CircuitBreaker(t *testing.T) {
 	e := NewNodeEntry(Hash{}, nil, time.Now(), 0)
 	if e.IsCircuitOpen() {

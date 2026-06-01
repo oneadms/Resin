@@ -186,6 +186,23 @@ func HandleGetNode(cp *service.ControlPlaneService) http.HandlerFunc {
 	}
 }
 
+// HandleUpdateNode returns a handler for PATCH /api/v1/nodes/{hash}.
+func HandleUpdateNode(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hash := PathParam(r, "hash")
+		body, ok := readRawBodyOrWriteInvalid(w, r)
+		if !ok {
+			return
+		}
+		n, err := cp.UpdateNode(hash, body)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, n)
+	}
+}
+
 // HandleProbeEgress returns a handler for POST /api/v1/nodes/{hash}/actions/probe-egress.
 func HandleProbeEgress(cp *service.ControlPlaneService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -115,7 +115,7 @@ func (p *Platform) evaluateNode(
 	geoLookup GeoLookupFunc,
 ) bool {
 	// 0. Disabled nodes are never routable.
-	if entry.IsDisabledBySubscriptions(subLookup) {
+	if entry.IsDisabled(subLookup) {
 		return false
 	}
 

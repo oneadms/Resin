@@ -12,6 +12,7 @@ const basePath = "/api/v1/nodes";
 type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
   tags?: NodeSummary["tags"] | null;
   enabled?: boolean | null;
+  manual_disabled?: boolean | null;
   display_tag?: string | null;
   last_error?: string | null;
   circuit_open_since?: string | null;
@@ -29,6 +30,7 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
   const normalized: NodeSummary = {
     ...rest,
     enabled: raw.enabled !== false,
+    manual_disabled: raw.manual_disabled === true,
     display_tag: raw.display_tag || "",
     tags: Array.isArray(raw.tags) ? raw.tags : [],
     last_error: raw.last_error || "",
@@ -94,6 +96,14 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
 
 export async function getNode(hash: string): Promise<NodeSummary> {
   const data = await apiRequest<ApiNodeSummary>(`${basePath}/${hash}`);
+  return normalizeNode(data);
+}
+
+export async function updateNode(hash: string, patch: { manual_disabled: boolean }): Promise<NodeSummary> {
+  const data = await apiRequest<ApiNodeSummary>(`${basePath}/${hash}`, {
+    method: "PATCH",
+    body: patch,
+  });
   return normalizeNode(data);
 }
 

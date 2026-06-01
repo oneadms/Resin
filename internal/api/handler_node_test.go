@@ -253,6 +253,59 @@ func TestHandleProbeEgress_ReturnsRegion(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateNode_ManualDisabled(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	raw := `{"type":"ss","server":"1.1.1.1","port":443}`
+	hash := node.HashFromRawOptions([]byte(raw))
+	addNodeForNodeListTest(t, cp, sub, raw, "203.0.113.10")
+
+	rec := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/nodes/"+hash.Hex(), map[string]any{"manual_disabled": true}, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("patch node status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeJSONMap(t, rec)
+	if body["manual_disabled"] != true {
+		t.Fatalf("manual_disabled: got %v, want true", body["manual_disabled"])
+	}
+	if body["enabled"] != false {
+		t.Fatalf("enabled: got %v, want false", body["enabled"])
+	}
+
+	rec = doJSONRequest(t, srv, http.MethodGet, "/api/v1/nodes?enabled=false", nil, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enabled=false status: got %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body = decodeJSONMap(t, rec)
+	if body["total"] != float64(1) {
+		t.Fatalf("enabled=false total: got %v, want 1", body["total"])
+	}
+}
+
+func TestHandleUpdateNode_RejectsInvalidPatch(t *testing.T) {
+	srv, cp, _ := newControlPlaneTestServer(t)
+
+	sub := subscription.NewSubscription("11111111-1111-1111-1111-111111111111", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+
+	raw := `{"type":"ss","server":"1.1.1.1","port":443}`
+	hash := node.HashFromRawOptions([]byte(raw))
+	addNodeForNodeListTest(t, cp, sub, raw, "203.0.113.10")
+
+	rec := doJSONRequest(t, srv, http.MethodPatch, "/api/v1/nodes/"+hash.Hex(), map[string]any{"manual_disabled": nil}, true)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("null patch status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	rec = doJSONRequest(t, srv, http.MethodPatch, "/api/v1/nodes/"+hash.Hex(), map[string]any{"enabled": false}, true)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown patch status: got %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func TestHandleListNodes_EnabledFilter(t *testing.T) {
 	srv, cp, _ := newControlPlaneTestServer(t)
 

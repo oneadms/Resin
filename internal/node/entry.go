@@ -31,6 +31,7 @@ type NodeEntry struct {
 	LastError       string
 
 	// Atomic dynamic fields for concurrent hot-path reads.
+	manualDisabled   atomic.Bool
 	FailureCount     atomic.Int32
 	CircuitOpenSince atomic.Int64               // unix-nano; 0 = not open
 	egressIP         atomic.Pointer[netip.Addr] // nil before first store
@@ -182,6 +183,27 @@ func (e *NodeEntry) HasEnabledSubscription(subLookup SubLookupFunc) bool {
 // by subLookup semantics).
 func (e *NodeEntry) IsDisabledBySubscriptions(subLookup SubLookupFunc) bool {
 	return !e.HasEnabledSubscription(subLookup)
+}
+
+// IsManuallyDisabled reports whether an operator disabled this node.
+func (e *NodeEntry) IsManuallyDisabled() bool {
+	return e != nil && e.manualDisabled.Load()
+}
+
+// SetManualDisabled updates the operator-controlled disabled state.
+func (e *NodeEntry) SetManualDisabled(disabled bool) bool {
+	if e == nil {
+		return false
+	}
+	return e.manualDisabled.Swap(disabled) != disabled
+}
+
+// IsDisabled reports whether the node is effectively disabled.
+func (e *NodeEntry) IsDisabled(subLookup SubLookupFunc) bool {
+	if e == nil {
+		return true
+	}
+	return e.IsManuallyDisabled() || e.IsDisabledBySubscriptions(subLookup)
 }
 
 // matchesAll returns true if s matches every regex in the list.

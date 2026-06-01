@@ -18,7 +18,7 @@ import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { getNode, listNodes, probeEgress, probeLatency } from "./api";
+import { getNode, listNodes, probeEgress, probeLatency, updateNode } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
@@ -406,6 +406,19 @@ export function NodesPage() {
     onSuccess: async (result) => {
       await refreshNodes();
       showToast("success", t("延迟探测完成：延迟={{latency}}", { latency: formatLatency(result.latency_ewma_ms) }));
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const updateNodeMutation = useMutation({
+    mutationFn: async ({ hash, manualDisabled }: { hash: string; manualDisabled: boolean }) =>
+      updateNode(hash, { manual_disabled: manualDisabled }),
+    onSuccess: async (node) => {
+      await refreshNodes();
+      showToast("success", node.manual_disabled ? t("节点已手动禁用") : t("节点已重新启用"));
     },
     onError: async (error) => {
       await refreshNodes();
@@ -917,6 +930,10 @@ export function NodesPage() {
                     </div>
                   </div>
                   <div>
+                    <span>{t("手动禁用")}</span>
+                    <p>{detailNode.manual_disabled ? t("是") : t("否")}</p>
+                  </div>
+                  <div>
                     <span>{t("出口 / 区域")}</span>
                     <p>
                       {detailNode.egress_ip || "-"} / {regionToFlag(detailNode.region)}
@@ -967,6 +984,32 @@ export function NodesPage() {
                   <h4>{t("运维操作")}</h4>
                 </div>
                 <div className="platform-ops-list">
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
+                      <h5>{detailNode.manual_disabled ? t("重新启用节点") : t("手动禁用节点")}</h5>
+                      <p className="platform-op-hint">
+                        {detailNode.manual_disabled
+                          ? t("允许节点在满足订阅、出口、熔断和延迟条件后重新参与路由。")
+                          : t("立即从路由候选中移除该节点，并跳过后续周期探测。")}
+                      </p>
+                    </div>
+                    <Button
+                      variant={detailNode.manual_disabled ? "secondary" : "danger"}
+                      onClick={() =>
+                        updateNodeMutation.mutate({
+                          hash: detailNode.node_hash,
+                          manualDisabled: !detailNode.manual_disabled,
+                        })
+                      }
+                      disabled={updateNodeMutation.isPending}
+                    >
+                      {updateNodeMutation.isPending
+                        ? t("处理中...")
+                        : detailNode.manual_disabled
+                          ? t("重新启用")
+                          : t("手动禁用")}
+                    </Button>
+                  </div>
                   <div className="platform-op-item">
                     <div className="platform-op-copy">
                       <h5>{t("出口探测")}</h5>

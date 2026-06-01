@@ -391,23 +391,39 @@ func (p *GlobalNodePool) ResolveNodeDisplayTag(hash node.Hash) string {
 	return ""
 }
 
-// IsNodeDisabled reports whether a node is disabled by subscription state:
-// all referencing subscriptions are disabled (or missing / not applicable).
+// IsNodeDisabled reports whether a node is effectively disabled by subscription
+// state or by operator override.
 func (p *GlobalNodePool) IsNodeDisabled(hash node.Hash) bool {
 	entry, ok := p.GetEntry(hash)
 	if !ok || entry == nil {
 		return true
 	}
-	return entry.IsDisabledBySubscriptions(p.MakeSubLookup())
+	return entry.IsDisabled(p.MakeSubLookup())
+}
+
+// SetNodeManualDisabled updates a node's operator-controlled disabled state.
+func (p *GlobalNodePool) SetNodeManualDisabled(hash node.Hash, disabled bool) bool {
+	entry, ok := p.GetEntry(hash)
+	if !ok || entry == nil {
+		return false
+	}
+	if !entry.SetManualDisabled(disabled) {
+		return false
+	}
+	p.notifyAllPlatformsDirty(hash)
+	if p.onNodeDynamicChanged != nil {
+		p.onNodeDynamicChanged(hash)
+	}
+	return true
 }
 
 // MakeHealthyAndEnabledEvaluator builds a predicate for pool-context health
-// aggregates: the node must not be disabled by subscription state and must
-// satisfy the entry-local health checks.
+// aggregates: the node must not be effectively disabled and must satisfy the
+// entry-local health checks.
 func (p *GlobalNodePool) MakeHealthyAndEnabledEvaluator() func(entry *node.NodeEntry) bool {
 	subLookup := p.MakeSubLookup()
 	return func(entry *node.NodeEntry) bool {
-		if entry == nil || entry.IsDisabledBySubscriptions(subLookup) {
+		if entry == nil || entry.IsDisabled(subLookup) {
 			return false
 		}
 		return entry.IsHealthy()

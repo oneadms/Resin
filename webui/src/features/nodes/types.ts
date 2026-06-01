@@ -8,6 +8,7 @@ export type NodeSummary = {
   node_hash: string;
   created_at: string;
   enabled: boolean;
+  manual_disabled: boolean;
   display_tag?: string;
   has_outbound: boolean;
   last_error?: string;

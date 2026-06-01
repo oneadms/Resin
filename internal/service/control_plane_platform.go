@@ -593,6 +593,7 @@ type NodeSummary struct {
 	NodeHash                         string    `json:"node_hash"`
 	CreatedAt                        string    `json:"created_at"`
 	Enabled                          bool      `json:"enabled"`
+	ManualDisabled                   bool      `json:"manual_disabled"`
 	DisplayTag                       string    `json:"display_tag,omitempty"`
 	HasOutbound                      bool      `json:"has_outbound"`
 	LastError                        string    `json:"last_error,omitempty"`
@@ -623,12 +624,13 @@ type NodeTag struct {
 
 func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEntry) NodeSummary {
 	ns := NodeSummary{
-		NodeHash:     h.Hex(),
-		CreatedAt:    entry.CreatedAt.UTC().Format(time.RFC3339Nano),
-		Enabled:      true,
-		HasOutbound:  entry.HasOutbound(),
-		LastError:    entry.GetLastError(),
-		FailureCount: int(entry.FailureCount.Load()),
+		NodeHash:       h.Hex(),
+		CreatedAt:      entry.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Enabled:        true,
+		ManualDisabled: entry.IsManuallyDisabled(),
+		HasOutbound:    entry.HasOutbound(),
+		LastError:      entry.GetLastError(),
+		FailureCount:   int(entry.FailureCount.Load()),
 	}
 
 	if s != nil && s.Pool != nil {

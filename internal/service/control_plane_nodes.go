@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -12,6 +14,10 @@ import (
 // ------------------------------------------------------------------
 // Nodes
 // ------------------------------------------------------------------
+
+var nodePatchAllowedFields = map[string]bool{
+	"manual_disabled": true,
+}
 
 // NodeFilters holds query filters for listing nodes.
 type NodeFilters struct {
@@ -125,9 +131,9 @@ func (s *ControlPlaneService) nodeEntryMatchesFilters(
 ) bool {
 	// Enabled/disabled filter.
 	if filters.Enabled != nil {
-		enabled := true
+		enabled := !entry.IsManuallyDisabled()
 		if subLookup != nil {
-			enabled = entry.HasEnabledSubscription(subLookup)
+			enabled = !entry.IsDisabled(subLookup)
 		}
 		if enabled != *filters.Enabled {
 			return false
@@ -215,6 +221,37 @@ func (s *ControlPlaneService) GetNode(hashStr string) (*NodeSummary, error) {
 	if !ok {
 		return nil, notFound("node not found")
 	}
+	ns := s.nodeEntryToSummary(h, entry)
+	return &ns, nil
+}
+
+// UpdateNode applies a constrained partial patch to a node.
+func (s *ControlPlaneService) UpdateNode(hashStr string, patchJSON json.RawMessage) (*NodeSummary, error) {
+	patch, verr := parseMergePatch(patchJSON)
+	if verr != nil {
+		return nil, verr
+	}
+	if err := patch.validateFields(nodePatchAllowedFields, func(key string) string {
+		return fmt.Sprintf("field %q is read-only or unknown", key)
+	}); err != nil {
+		return nil, err
+	}
+
+	h, err := node.ParseHex(hashStr)
+	if err != nil {
+		return nil, invalidArg("node_hash: invalid format")
+	}
+	entry, ok := s.Pool.GetEntry(h)
+	if !ok {
+		return nil, notFound("node not found")
+	}
+
+	if disabled, ok, err := patch.optionalBool("manual_disabled"); err != nil {
+		return nil, err
+	} else if ok {
+		s.Pool.SetNodeManualDisabled(h, disabled)
+	}
+
 	ns := s.nodeEntryToSummary(h, entry)
 	return &ns, nil
 }
