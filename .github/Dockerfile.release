@@ -4,7 +4,8 @@ FROM alpine:3.21
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN apk add --no-cache ca-certificates tzdata su-exec \
+RUN sed -i 's|https://dl-cdn.alpinelinux.org|http://dl-cdn.alpinelinux.org|g' /etc/apk/repositories \
+  && apk add --no-cache ca-certificates tzdata su-exec \
   && addgroup -S resin \
   && adduser -S -G resin -h /var/lib/resin resin \
   && mkdir -p /var/cache/resin /var/lib/resin /var/log/resin \

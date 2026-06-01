@@ -32,7 +32,8 @@ RUN CGO_ENABLED=0 go build -trimpath -tags "with_quic with_wireguard with_grpc w
 FROM alpine:3.21
 # NOTE: Keep this runtime stage in sync with .github/Dockerfile.release.
 # GHCR release images are built from .github/Dockerfile.release, not this file.
-RUN apk add --no-cache ca-certificates tzdata su-exec \
+RUN sed -i 's|https://dl-cdn.alpinelinux.org|http://dl-cdn.alpinelinux.org|g' /etc/apk/repositories \
+  && apk add --no-cache ca-certificates tzdata su-exec \
   && addgroup -S resin \
   && adduser -S -G resin -h /var/lib/resin resin \
   && mkdir -p /var/cache/resin /var/lib/resin /var/log/resin \
