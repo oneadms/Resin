@@ -439,7 +439,6 @@ func (m *ProbeManager) scanEgress() {
 		interval = m.maxEgressTestInterval()
 	}
 	lookahead := 15 * time.Second
-	subLookup := m.pool.MakeSubLookup()
 
 	m.pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
 		// Check stop signal.
@@ -449,8 +448,8 @@ func (m *ProbeManager) scanEgress() {
 		default:
 		}
 
-		if entry.IsDisabled(subLookup) {
-			return true // disabled node -> skip periodic probe
+		if entry.IsManuallyDisabled() {
+			return true // manually disabled node -> skip periodic probe
 		}
 
 		if entry.Outbound.Load() == nil {
@@ -484,7 +483,6 @@ func (m *ProbeManager) scanLatency() {
 		maxAuthorityInterval = m.maxAuthorityLatencyTestInterval()
 	}
 	lookahead := 15 * time.Second
-	subLookup := m.pool.MakeSubLookup()
 	var authorities []string
 	if m.latencyAuthorities != nil {
 		authorities = m.latencyAuthorities()
@@ -497,8 +495,8 @@ func (m *ProbeManager) scanLatency() {
 		default:
 		}
 
-		if entry.IsDisabled(subLookup) {
-			return true // disabled node -> skip periodic probe
+		if entry.IsManuallyDisabled() {
+			return true // manually disabled node -> skip periodic probe
 		}
 
 		if entry.Outbound.Load() == nil {
@@ -537,7 +535,7 @@ func (m *ProbeManager) executeTask(task probeTask) {
 	if !ok || entry.Outbound.Load() == nil {
 		return
 	}
-	if entry.IsDisabled(m.pool.MakeSubLookup()) {
+	if entry.IsManuallyDisabled() {
 		return
 	}
 
