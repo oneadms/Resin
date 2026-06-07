@@ -91,59 +91,67 @@ func countUniqueHealthyAndEnabledEgressIPs(nodes []service.NodeSummary) int {
 	return len(seen)
 }
 
+func parseNodeFiltersOrWriteInvalid(w http.ResponseWriter, r *http.Request) (service.NodeFilters, bool) {
+	q := r.URL.Query()
+	filters := service.NodeFilters{}
+
+	platformID, ok := parseOptionalUUIDQuery(w, r, "platform_id", "platform_id")
+	if !ok {
+		return service.NodeFilters{}, false
+	}
+	filters.PlatformID = platformID
+
+	subscriptionID, ok := parseOptionalUUIDQuery(w, r, "subscription_id", "subscription_id")
+	if !ok {
+		return service.NodeFilters{}, false
+	}
+	filters.SubscriptionID = subscriptionID
+
+	if v := q.Get("region"); v != "" {
+		filters.Region = &v
+	}
+	if v := q.Get("egress_ip"); v != "" {
+		filters.EgressIP = &v
+	}
+	if v := strings.TrimSpace(q.Get("tag_keyword")); v != "" {
+		filters.TagKeyword = &v
+	}
+
+	circuitOpen, ok := parseBoolQueryOrWriteInvalid(w, r, "circuit_open")
+	if !ok {
+		return service.NodeFilters{}, false
+	}
+	filters.CircuitOpen = circuitOpen
+
+	hasOutbound, ok := parseBoolQueryOrWriteInvalid(w, r, "has_outbound")
+	if !ok {
+		return service.NodeFilters{}, false
+	}
+	filters.HasOutbound = hasOutbound
+
+	enabled, ok := parseBoolQueryOrWriteInvalid(w, r, "enabled")
+	if !ok {
+		return service.NodeFilters{}, false
+	}
+	filters.Enabled = enabled
+
+	if v := q.Get("probed_since"); v != "" {
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			writeInvalidArgument(w, "probed_since: invalid RFC3339 timestamp")
+			return service.NodeFilters{}, false
+		}
+		filters.ProbedSince = &t
+	}
+	return filters, true
+}
+
 // HandleListNodes returns a handler for GET /api/v1/nodes.
 func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		filters := service.NodeFilters{}
-
-		platformID, ok := parseOptionalUUIDQuery(w, r, "platform_id", "platform_id")
+		filters, ok := parseNodeFiltersOrWriteInvalid(w, r)
 		if !ok {
 			return
-		}
-		filters.PlatformID = platformID
-
-		subscriptionID, ok := parseOptionalUUIDQuery(w, r, "subscription_id", "subscription_id")
-		if !ok {
-			return
-		}
-		filters.SubscriptionID = subscriptionID
-
-		if v := q.Get("region"); v != "" {
-			filters.Region = &v
-		}
-		if v := q.Get("egress_ip"); v != "" {
-			filters.EgressIP = &v
-		}
-		if v := strings.TrimSpace(q.Get("tag_keyword")); v != "" {
-			filters.TagKeyword = &v
-		}
-
-		circuitOpen, ok := parseBoolQueryOrWriteInvalid(w, r, "circuit_open")
-		if !ok {
-			return
-		}
-		filters.CircuitOpen = circuitOpen
-
-		hasOutbound, ok := parseBoolQueryOrWriteInvalid(w, r, "has_outbound")
-		if !ok {
-			return
-		}
-		filters.HasOutbound = hasOutbound
-
-		enabled, ok := parseBoolQueryOrWriteInvalid(w, r, "enabled")
-		if !ok {
-			return
-		}
-		filters.Enabled = enabled
-
-		if v := q.Get("probed_since"); v != "" {
-			t, err := time.Parse(time.RFC3339Nano, v)
-			if err != nil {
-				writeInvalidArgument(w, "probed_since: invalid RFC3339 timestamp")
-				return
-			}
-			filters.ProbedSince = &t
 		}
 
 		nodes, err := cp.ListNodes(filters)
@@ -170,6 +178,31 @@ func HandleListNodes(cp *service.ControlPlaneService) http.HandlerFunc {
 			UniqueEgressIPs:        countUniqueEgressIPs(nodes),
 			UniqueHealthyEgressIPs: countUniqueHealthyAndEnabledEgressIPs(nodes),
 		})
+	}
+}
+
+type batchProbeLatencyRequest struct {
+	MaxLatencyMs float64 `json:"max_latency_ms"`
+}
+
+// HandleBatchProbeLatency returns a handler for POST /api/v1/nodes/actions/probe-latency.
+func HandleBatchProbeLatency(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		filters, ok := parseNodeFiltersOrWriteInvalid(w, r)
+		if !ok {
+			return
+		}
+		var req batchProbeLatencyRequest
+		if err := DecodeBody(r, &req); err != nil {
+			writeDecodeBodyError(w, err)
+			return
+		}
+		result, err := cp.ProbeLatencyBatch(filters, req.MaxLatencyMs)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
 	}
 }
 

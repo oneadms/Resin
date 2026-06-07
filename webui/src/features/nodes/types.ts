@@ -63,4 +63,13 @@ export type EgressProbeResult = {
 
 export type LatencyProbeResult = {
   latency_ewma_ms: number;
+  latency_ms: number;
+};
+
+export type BatchLatencyProbeResult = {
+  matched_count: number;
+  tested_count: number;
+  disabled_count: number;
+  failed_count: number;
+  skipped_count: number;
 };

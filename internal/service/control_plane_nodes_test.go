@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"net/netip"
 	"sync/atomic"
 	"testing"
@@ -388,6 +389,76 @@ func TestUpdateNode_ManualDisabled(t *testing.T) {
 	}
 	if got.ManualDisabled || !got.Enabled {
 		t.Fatalf("enabled summary = %+v, want manual_disabled=false enabled=true", got)
+	}
+}
+
+func TestProbeLatencyBatch_DisablesOnlyNodesAboveThreshold(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	pool := newNodeListTestPool(subMgr)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	subMgr.Register(sub)
+
+	fastHash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"1.1.1.1","port":443}`),
+		"203.0.113.30",
+	)
+	slowHash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"2.2.2.2","port":443}`),
+		"203.0.113.31",
+	)
+	failedHash := addRoutableNodeForSubscription(
+		t,
+		pool,
+		sub,
+		[]byte(`{"type":"ss","server":"3.3.3.3","port":443}`),
+		"203.0.113.32",
+	)
+
+	probeMgr := probe.NewProbeManager(probe.ProbeConfig{
+		Pool: pool,
+		Fetcher: func(hash node.Hash, _ string) ([]byte, time.Duration, error) {
+			switch hash {
+			case fastHash:
+				return []byte("ok"), 80 * time.Millisecond, nil
+			case slowHash:
+				return []byte("ok"), 1500 * time.Millisecond, nil
+			case failedHash:
+				return nil, 0, errors.New("probe failed")
+			default:
+				return nil, 0, errors.New("unexpected node")
+			}
+		},
+	})
+
+	cp := &ControlPlaneService{
+		Pool:     pool,
+		SubMgr:   subMgr,
+		GeoIP:    &geoip.Service{},
+		ProbeMgr: probeMgr,
+	}
+
+	result, err := cp.ProbeLatencyBatch(NodeFilters{SubscriptionID: &sub.ID}, 1000)
+	if err != nil {
+		t.Fatalf("ProbeLatencyBatch: %v", err)
+	}
+	if result.MatchedCount != 3 || result.TestedCount != 2 || result.DisabledCount != 1 || result.FailedCount != 1 {
+		t.Fatalf("batch result = %+v", result)
+	}
+	if pool.IsNodeDisabled(fastHash) {
+		t.Fatal("fast node should remain enabled")
+	}
+	if !pool.IsNodeDisabled(slowHash) {
+		t.Fatal("slow node should be manually disabled")
+	}
+	if pool.IsNodeDisabled(failedHash) {
+		t.Fatal("failed probe node should not be manually disabled")
 	}
 }
 

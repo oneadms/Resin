@@ -1,7 +1,7 @@
 # docker-compose.yml
 services:
   resin:
-    image: ghcr.io/oneadms/resin:1.1.2
+    image: ghcr.io/oneadms/resin:1.1.4
     container_name: resin
     restart: unless-stopped
     environment:

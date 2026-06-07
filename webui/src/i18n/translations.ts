@@ -37,6 +37,12 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "创建中...": "Creating...",
   "更新中...": "Updating...",
   "测试中...": "Testing...",
+  "一键测速并移除": "Test and remove",
+  "自动移除延迟高于": "Remove above latency (ms)",
+  "测试当前筛选结果，并自动禁用超过阈值的节点":
+    "Test the current filtered nodes and automatically disable nodes above the threshold",
+  "批量测速完成：成功 {{tested}}，自动禁用 {{disabled}}，失败 {{failed}}，跳过 {{skipped}}":
+    "Batch latency test complete: {{tested}} tested, {{disabled}} disabled, {{failed}} failed, {{skipped}} skipped",
   "探测中...": "Probing...",
   "加载报文内容中...": "Loading payload...",
   "查询": "Lookup",

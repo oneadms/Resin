@@ -110,6 +110,7 @@ func NewServerWithAddress(
 
 		// Nodes.
 		authed.Handle("GET /api/v1/nodes", HandleListNodes(cp))
+		authed.Handle("POST /api/v1/nodes/actions/probe-latency", HandleBatchProbeLatency(cp))
 		authed.Handle("GET /api/v1/nodes/{hash}", HandleGetNode(cp))
 		authed.Handle("PATCH /api/v1/nodes/{hash}", HandleUpdateNode(cp))
 		authed.Handle("POST /api/v1/nodes/{hash}/actions/probe-egress", HandleProbeEgress(cp))

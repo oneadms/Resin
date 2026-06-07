@@ -3,7 +3,10 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Resinat/Resin/internal/node"
@@ -290,5 +293,78 @@ func (s *ControlPlaneService) ProbeLatency(hashStr string) (*probe.LatencyProbeR
 	if err != nil {
 		return nil, internal("latency probe failed", err)
 	}
+	return result, nil
+}
+
+// BatchLatencyProbeResult summarizes a bulk real-connection latency probe.
+type BatchLatencyProbeResult struct {
+	MatchedCount  int `json:"matched_count"`
+	TestedCount   int `json:"tested_count"`
+	DisabledCount int `json:"disabled_count"`
+	FailedCount   int `json:"failed_count"`
+	SkippedCount  int `json:"skipped_count"`
+}
+
+// ProbeLatencyBatch probes all enabled nodes matching filters and manually
+// disables nodes whose measured latency exceeds maxLatencyMs.
+func (s *ControlPlaneService) ProbeLatencyBatch(filters NodeFilters, maxLatencyMs float64) (*BatchLatencyProbeResult, error) {
+	if maxLatencyMs <= 0 || math.IsNaN(maxLatencyMs) || math.IsInf(maxLatencyMs, 0) {
+		return nil, invalidArg("max_latency_ms: must be a positive finite number")
+	}
+	if s == nil || s.ProbeMgr == nil {
+		return nil, internal("latency probe manager is unavailable", nil)
+	}
+
+	nodes, err := s.ListNodes(filters)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &BatchLatencyProbeResult{MatchedCount: len(nodes)}
+	const concurrency = 8
+	tasks := make(chan NodeSummary)
+	var tested atomic.Int64
+	var disabled atomic.Int64
+	var failed atomic.Int64
+	var skipped atomic.Int64
+	var wg sync.WaitGroup
+
+	worker := func() {
+		defer wg.Done()
+		for summary := range tasks {
+			if !summary.Enabled {
+				skipped.Add(1)
+				continue
+			}
+			probeResult, probeErr := s.ProbeLatency(summary.NodeHash)
+			if probeErr != nil {
+				failed.Add(1)
+				continue
+			}
+			tested.Add(1)
+			if probeResult.LatencyMs > maxLatencyMs {
+				h, parseErr := node.ParseHex(summary.NodeHash)
+				if parseErr == nil && s.Pool.SetNodeManualDisabled(h, true) {
+					disabled.Add(1)
+				}
+			}
+		}
+	}
+
+	workerCount := min(concurrency, len(nodes))
+	for range workerCount {
+		wg.Add(1)
+		go worker()
+	}
+	for _, summary := range nodes {
+		tasks <- summary
+	}
+	close(tasks)
+	wg.Wait()
+
+	result.TestedCount = int(tested.Load())
+	result.DisabledCount = int(disabled.Load())
+	result.FailedCount = int(failed.Load())
+	result.SkippedCount = int(skipped.Load())
 	return result, nil
 }

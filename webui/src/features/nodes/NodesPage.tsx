@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
-import { AlertTriangle, Eraser, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
+import { AlertTriangle, Eraser, Gauge, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
@@ -18,7 +18,7 @@ import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { getNode, listNodes, probeEgress, probeLatency, updateNode } from "./api";
+import { batchProbeLatency, getNode, listNodes, probeEgress, probeLatency, updateNode } from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
@@ -271,6 +271,7 @@ export function NodesPage() {
   const [sortOrder, setSortOrder] = useState<SortOrder>("asc");
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(200);
+  const [maxLatencyMs, setMaxLatencyMs] = useState("1000");
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingEgressHashes, setPendingEgressHashes] = useState<Set<string>>(() => new Set());
@@ -425,6 +426,29 @@ export function NodesPage() {
       showToast("error", formatApiErrorMessage(error, t));
     },
   });
+
+  const batchProbeLatencyMutation = useMutation({
+    mutationFn: async () => batchProbeLatency(activeFilters, Number(maxLatencyMs)),
+    onSuccess: async (result) => {
+      await refreshNodes();
+      showToast(
+        "success",
+        t("批量测速完成：成功 {{tested}}，自动禁用 {{disabled}}，失败 {{failed}}，跳过 {{skipped}}", {
+          tested: result.tested_count,
+          disabled: result.disabled_count,
+          failed: result.failed_count,
+          skipped: result.skipped_count,
+        })
+      );
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const parsedMaxLatencyMs = Number(maxLatencyMs);
+  const maxLatencyInvalid = !Number.isFinite(parsedMaxLatencyMs) || parsedMaxLatencyMs <= 0;
 
   const markProbePending = (hash: string, action: ProbeAction): boolean => {
     if (action === "egress") {
@@ -803,6 +827,32 @@ export function NodesPage() {
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.125rem", marginLeft: "auto" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                <label htmlFor="node-max-latency" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                  {t("自动移除延迟高于")}
+                </label>
+                <Input
+                  id="node-max-latency"
+                  type="number"
+                  min="1"
+                  step="50"
+                  value={maxLatencyMs}
+                  invalid={maxLatencyInvalid}
+                  onChange={(event) => setMaxLatencyMs(event.target.value)}
+                  style={{ ...NODE_FILTER_CONTROL_STYLE, width: "110px" }}
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="danger"
+                title={t("测试当前筛选结果，并自动禁用超过阈值的节点")}
+                onClick={() => batchProbeLatencyMutation.mutate()}
+                disabled={batchProbeLatencyMutation.isPending || maxLatencyInvalid}
+                style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", alignSelf: "flex-end" }}
+              >
+                <Gauge size={16} className={batchProbeLatencyMutation.isPending ? "spin" : undefined} />
+                {batchProbeLatencyMutation.isPending ? t("测试中...") : t("一键测速并移除")}
+              </Button>
               <Button size="sm" variant="secondary" onClick={refreshNodes} disabled={nodesQuery.isFetching} style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
                 <RefreshCw size={16} className={nodesQuery.isFetching ? "spin" : undefined} />
                 {t("刷新")}

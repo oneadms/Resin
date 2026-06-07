@@ -385,6 +385,7 @@ func (m *ProbeManager) ProbeEgressSync(hash node.Hash) (*EgressProbeResult, erro
 // LatencyProbeResult holds the results of a synchronous latency probe.
 type LatencyProbeResult struct {
 	LatencyEwmaMs float64 `json:"latency_ewma_ms"`
+	LatencyMs     float64 `json:"latency_ms"`
 }
 
 // ProbeLatencySync performs a blocking latency probe and returns the results.
@@ -414,7 +415,8 @@ func (m *ProbeManager) ProbeLatencySync(hash node.Hash) (*LatencyProbeResult, er
 		m.onProbeEvent("latency")
 	}
 
-	if err := m.performLatencyProbe(hash, testURL); err != nil {
+	latency, err := m.performLatencyProbe(hash, testURL)
+	if err != nil {
 		return nil, fmt.Errorf("latency probe failed: %w", err)
 	}
 
@@ -428,6 +430,7 @@ func (m *ProbeManager) ProbeLatencySync(hash node.Hash) (*LatencyProbeResult, er
 
 	return &LatencyProbeResult{
 		LatencyEwmaMs: ewmaMs,
+		LatencyMs:     float64(latency) / float64(time.Millisecond),
 	}, nil
 }
 
@@ -448,8 +451,8 @@ func (m *ProbeManager) scanEgress() {
 		default:
 		}
 
-		if entry.IsManuallyDisabled() {
-			return true // manually disabled node -> skip periodic probe
+		if m.pool.IsNodeDisabled(h) {
+			return true // disabled node -> skip periodic probe
 		}
 
 		if entry.Outbound.Load() == nil {
@@ -495,8 +498,8 @@ func (m *ProbeManager) scanLatency() {
 		default:
 		}
 
-		if entry.IsManuallyDisabled() {
-			return true // manually disabled node -> skip periodic probe
+		if m.pool.IsNodeDisabled(h) {
+			return true // disabled node -> skip periodic probe
 		}
 
 		if entry.Outbound.Load() == nil {
@@ -535,7 +538,7 @@ func (m *ProbeManager) executeTask(task probeTask) {
 	if !ok || entry.Outbound.Load() == nil {
 		return
 	}
-	if entry.IsManuallyDisabled() {
+	if m.pool.IsNodeDisabled(task.key.hash) {
 		return
 	}
 
@@ -773,7 +776,7 @@ func (m *ProbeManager) probeLatency(hash node.Hash, entry *node.NodeEntry, testU
 		m.onProbeEvent("latency")
 	}
 
-	if err := m.performLatencyProbe(hash, testURL); err != nil {
+	if _, err := m.performLatencyProbe(hash, testURL); err != nil {
 		log.Printf("[probe] latency probe failed for %s: %v", hash.Hex(), err)
 		return
 	}
@@ -801,18 +804,18 @@ func (m *ProbeManager) performEgressProbe(hash node.Hash) (netip.Addr, egressPro
 	return ip, egressProbeNoError, nil
 }
 
-func (m *ProbeManager) performLatencyProbe(hash node.Hash, testURL string) error {
+func (m *ProbeManager) performLatencyProbe(hash node.Hash, testURL string) (time.Duration, error) {
 	domain := netutil.ExtractDomain(testURL)
 	_, latency, err := m.fetcher(hash, testURL)
 	if err != nil {
 		m.pool.RecordResult(hash, false)
 		m.pool.RecordLatency(hash, domain, nil)
-		return err
+		return 0, err
 	}
 
 	m.pool.RecordResult(hash, true)
 	m.pool.RecordLatency(hash, domain, &latency)
-	return nil
+	return latency, nil
 }
 
 func (m *ProbeManager) currentLatencyTestURL() string {

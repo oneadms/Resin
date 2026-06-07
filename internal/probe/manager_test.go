@@ -537,6 +537,51 @@ func TestQueuedAsyncProbe_SkipsNodeDisabledBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestQueuedAsyncProbe_SkipsManuallyDisabledNodeBeforeExecution(t *testing.T) {
+	subMgr := topology.NewSubscriptionManager()
+	sub := subscription.NewSubscription("sub1", "sub1", "url", true, false)
+	subMgr.Register(sub)
+
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              subMgr.Lookup,
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+
+	hash := node.HashFromRawOptions([]byte(`{"type":"queued-manually-disabled-before-execution"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"queued-manually-disabled-before-execution"}`), "sub1")
+	sub.ManagedNodes().StoreNode(hash, subscription.ManagedNode{Tags: []string{"tag"}})
+
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	var calls atomic.Int32
+	mgr := NewProbeManager(ProbeConfig{
+		Pool:        pool,
+		Concurrency: 1,
+		Fetcher: func(_ node.Hash, _ string) ([]byte, time.Duration, error) {
+			calls.Add(1)
+			return []byte("ip=198.51.100.1"), 10 * time.Millisecond, nil
+		},
+	})
+	defer mgr.Stop()
+
+	if ok := mgr.enqueueProbe(hash, probeTaskKindEgress, probePriorityNormal); !ok {
+		t.Fatal("enqueue should succeed")
+	}
+
+	pool.SetNodeManualDisabled(hash, true)
+	mgr.Start()
+	time.Sleep(50 * time.Millisecond)
+
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("expected manually disabled queued node to be skipped, calls=%d", got)
+	}
+}
+
 func TestProbeManager_StopWaitsImmediateProbe(t *testing.T) {
 	pool := topology.NewGlobalNodePool(topology.PoolConfig{
 		MaxLatencyTableEntries: 16,
@@ -848,6 +893,9 @@ func TestProbeLatencySync_ReturnsEWMAFromNormalizedDomain(t *testing.T) {
 	}
 	if result.LatencyEwmaMs <= 0 {
 		t.Fatalf("latency_ewma_ms = %f, want > 0", result.LatencyEwmaMs)
+	}
+	if result.LatencyMs != 80 {
+		t.Fatalf("latency_ms = %f, want 80", result.LatencyMs)
 	}
 
 	stats, ok := entry.LatencyTable.GetDomainStats("gstatic.com")

@@ -1,7 +1,9 @@
 import { apiRequest } from "../../lib/api-client";
 import type {
+  BatchLatencyProbeResult,
   EgressProbeResult,
   LatencyProbeResult,
+  NodeListFilters,
   NodeListQuery,
   NodeSummary,
   PageResponse,
@@ -51,14 +53,7 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
   return normalized;
 }
 
-export async function listNodes(filters: NodeListQuery): Promise<PageResponse<NodeSummary>> {
-  const query = new URLSearchParams({
-    limit: String(filters.limit ?? 50),
-    offset: String(filters.offset ?? 0),
-    sort_by: filters.sort_by || "tag",
-    sort_order: filters.sort_order || "asc",
-  });
-
+function appendNodeFilters(query: URLSearchParams, filters: NodeListFilters) {
   const appendIfNotEmpty = (key: string, value?: string) => {
     if (!value) {
       return;
@@ -86,6 +81,16 @@ export async function listNodes(filters: NodeListQuery): Promise<PageResponse<No
   if (filters.enabled !== undefined) {
     query.set("enabled", String(filters.enabled));
   }
+}
+
+export async function listNodes(filters: NodeListQuery): Promise<PageResponse<NodeSummary>> {
+  const query = new URLSearchParams({
+    limit: String(filters.limit ?? 50),
+    offset: String(filters.offset ?? 0),
+    sort_by: filters.sort_by || "tag",
+    sort_order: filters.sort_order || "asc",
+  });
+  appendNodeFilters(query, filters);
 
   const data = await apiRequest<PageResponse<ApiNodeSummary>>(`${basePath}?${query.toString()}`);
   return {
@@ -116,5 +121,17 @@ export async function probeEgress(hash: string): Promise<EgressProbeResult> {
 export async function probeLatency(hash: string): Promise<LatencyProbeResult> {
   return apiRequest<LatencyProbeResult>(`${basePath}/${hash}/actions/probe-latency`, {
     method: "POST",
+  });
+}
+
+export async function batchProbeLatency(
+  filters: NodeListFilters,
+  maxLatencyMs: number
+): Promise<BatchLatencyProbeResult> {
+  const query = new URLSearchParams();
+  appendNodeFilters(query, filters);
+  return apiRequest<BatchLatencyProbeResult>(`${basePath}/actions/probe-latency?${query.toString()}`, {
+    method: "POST",
+    body: { max_latency_ms: maxLatencyMs },
   });
 }
