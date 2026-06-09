@@ -606,6 +606,7 @@ type NodeSummary struct {
 	LastAuthorityLatencyProbeAttempt string    `json:"last_authority_latency_probe_attempt,omitempty"`
 	ReferenceLatencyMs               *float64  `json:"reference_latency_ms,omitempty"`
 	DownloadBandwidthMbps            *float64  `json:"download_bandwidth_mbps,omitempty"`
+	UploadBandwidthMbps              *float64  `json:"upload_bandwidth_mbps,omitempty"`
 	LastBandwidthProbeAttempt        string    `json:"last_bandwidth_probe_attempt,omitempty"`
 	LastBandwidthUpdate              string    `json:"last_bandwidth_update,omitempty"`
 	LastEgressUpdateAttempt          string    `json:"last_egress_update_attempt,omitempty"`
@@ -666,6 +667,9 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	}
 	if bandwidth := entry.BandwidthMbps(); bandwidth > 0 {
 		ns.DownloadBandwidthMbps = &bandwidth
+	}
+	if bandwidth := entry.UploadBandwidthMbps(); bandwidth > 0 {
+		ns.UploadBandwidthMbps = &bandwidth
 	}
 	if lastAttempt := entry.LastBandwidthProbeAttempt.Load(); lastAttempt > 0 {
 		ns.LastBandwidthProbeAttempt = time.Unix(0, lastAttempt).UTC().Format(time.RFC3339Nano)

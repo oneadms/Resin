@@ -110,6 +110,7 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "连续失败": "Consecutive Failures",
   "参考延迟": "Reference Latency",
   "下载带宽": "Download Bandwidth",
+  "上行带宽": "Upload Bandwidth",
   "带宽更新时间": "Bandwidth Updated",
   "上次探测": "Last Probe",
   "上次检查": "Last Check",
@@ -673,6 +674,8 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "带宽测试": "Bandwidth Test",
   "触发带宽测试": "Run Bandwidth Test",
   "自动移除带宽低于 (Mbps)": "Remove below (Mbps)",
+  "自动移除下载低于 (Mbps)": "Remove download below (Mbps)",
+  "自动移除上行低于 (Mbps)": "Remove upload below (Mbps)",
   "一键带宽测试并移除": "Test Bandwidth & Remove",
   "延迟测试并移除": "Test Latency & Remove",
   "一键质量筛选": "Run Quality Screening",
@@ -690,12 +693,18 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
     "Quality screening complete: {{tested}} fully tested, {{kept}} kept, {{disabled}} disabled, {{failedDisabled}} removed by failures, {{latencyThreshold}} over latency threshold, {{bandwidthThreshold}} below bandwidth threshold, {{latencyFailed}} latency probe failures, {{bandwidthFailed}} bandwidth probe failures, {{skipped}} skipped",
   "质量筛选完成：完整测试 {{tested}}，保留 {{kept}}，恢复 {{reenabled}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟超标 {{latencyThreshold}}，带宽低标 {{bandwidthThreshold}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}":
     "Quality screening complete: {{tested}} fully tested, {{kept}} kept, {{reenabled}} recovered, {{disabled}} disabled, {{failedDisabled}} removed by failures, {{latencyThreshold}} over latency threshold, {{bandwidthThreshold}} below bandwidth threshold, {{latencyFailed}} latency probe failures, {{bandwidthFailed}} bandwidth probe failures, {{skipped}} skipped",
+  "质量筛选完成：完整测试 {{tested}}，保留 {{kept}}，恢复 {{reenabled}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟超标 {{latencyThreshold}}，下载低标 {{bandwidthThreshold}}，上行低标 {{uploadBandwidthThreshold}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}":
+    "Quality screening complete: {{tested}} fully tested, {{kept}} kept, {{reenabled}} recovered, {{disabled}} disabled, {{failedDisabled}} removed by failures, {{latencyThreshold}} over latency threshold, {{bandwidthThreshold}} below download threshold, {{uploadBandwidthThreshold}} below upload threshold, {{latencyFailed}} latency probe failures, {{bandwidthFailed}} bandwidth probe failures, {{skipped}} skipped",
   "下载固定测试数据，并自动禁用低于最低带宽的节点":
     "Download fixed test data and disable nodes below the minimum bandwidth",
+  "测试下载和上行带宽，并自动禁用低于阈值的节点":
+    "Test download and upload bandwidth, then disable nodes below thresholds",
   "通过节点下载固定大小的数据并计算实际速度。":
     "Download fixed-size data through the node and calculate actual speed.",
   "带宽测试完成：下载={{bandwidth}}，耗时={{elapsed}} ms":
     "Bandwidth test complete: download={{bandwidth}}, elapsed={{elapsed}} ms",
+  "带宽测试完成：下载={{download}}，上行={{upload}}，耗时={{elapsed}}/{{uploadElapsed}} ms":
+    "Bandwidth test complete: download={{download}}, upload={{upload}}, elapsed={{elapsed}}/{{uploadElapsed}} ms",
   "批量带宽测试完成：成功 {{tested}}，自动禁用 {{disabled}}，失败 {{failed}}，跳过 {{skipped}}":
     "Batch bandwidth test complete: {{tested}} succeeded, {{disabled}} disabled, {{failed}} failed, {{skipped}} skipped",
   "样本": "Samples",

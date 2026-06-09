@@ -654,6 +654,18 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 // RecordBandwidth records a bandwidth probe attempt and an optional successful
 // download sample. Failures update only the attempt timestamp.
 func (p *GlobalNodePool) RecordBandwidth(hash node.Hash, mbps *float64) {
+	p.RecordBandwidthPair(hash, mbps, nil)
+}
+
+// RecordUploadBandwidth records a bandwidth probe attempt and an optional
+// successful upload sample. Failures update only the attempt timestamp.
+func (p *GlobalNodePool) RecordUploadBandwidth(hash node.Hash, mbps *float64) {
+	p.RecordBandwidthPair(hash, nil, mbps)
+}
+
+// RecordBandwidthPair records a bandwidth probe attempt and optional successful
+// download/upload samples. Failures update only the attempt timestamp.
+func (p *GlobalNodePool) RecordBandwidthPair(hash node.Hash, downloadMbps *float64, uploadMbps *float64) {
 	entry, ok := p.nodes.Load(hash)
 	if !ok {
 		return
@@ -661,8 +673,16 @@ func (p *GlobalNodePool) RecordBandwidth(hash node.Hash, mbps *float64) {
 
 	nowNs := time.Now().UnixNano()
 	entry.LastBandwidthProbeAttempt.Store(nowNs)
-	if mbps != nil && *mbps > 0 {
-		entry.UpdateBandwidthMbps(*mbps)
+	updated := false
+	if downloadMbps != nil && *downloadMbps > 0 {
+		entry.UpdateBandwidthMbps(*downloadMbps)
+		updated = true
+	}
+	if uploadMbps != nil && *uploadMbps > 0 {
+		entry.UpdateUploadBandwidthMbps(*uploadMbps)
+		updated = true
+	}
+	if updated {
 		entry.LastBandwidthUpdate.Store(nowNs)
 	}
 	if p.onNodeDynamicChanged != nil {

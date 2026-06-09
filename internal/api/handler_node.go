@@ -187,11 +187,13 @@ type batchProbeLatencyRequest struct {
 
 type batchProbeBandwidthRequest struct {
 	MinDownloadMbps float64 `json:"min_download_mbps"`
+	MinUploadMbps   float64 `json:"min_upload_mbps"`
 }
 
 type batchProbeQualityRequest struct {
 	MaxLatencyMs    float64 `json:"max_latency_ms"`
 	MinDownloadMbps float64 `json:"min_download_mbps"`
+	MinUploadMbps   float64 `json:"min_upload_mbps"`
 	DisableFailed   bool    `json:"disable_failed"`
 	RecoverDisabled bool    `json:"recover_disabled"`
 }
@@ -229,7 +231,10 @@ func HandleBatchProbeBandwidth(cp *service.ControlPlaneService) http.HandlerFunc
 			writeDecodeBodyError(w, err)
 			return
 		}
-		result, err := cp.ProbeBandwidthBatch(filters, req.MinDownloadMbps)
+		if req.MinUploadMbps <= 0 {
+			req.MinUploadMbps = req.MinDownloadMbps
+		}
+		result, err := cp.ProbeBandwidthBatch(filters, req.MinDownloadMbps, req.MinUploadMbps)
 		if err != nil {
 			writeServiceError(w, err)
 			return
@@ -250,7 +255,10 @@ func HandleBatchProbeQuality(cp *service.ControlPlaneService) http.HandlerFunc {
 			writeDecodeBodyError(w, err)
 			return
 		}
-		result, err := cp.ProbeQualityBatch(filters, req.MaxLatencyMs, req.MinDownloadMbps, req.DisableFailed, req.RecoverDisabled)
+		if req.MinUploadMbps <= 0 {
+			req.MinUploadMbps = req.MinDownloadMbps
+		}
+		result, err := cp.ProbeQualityBatch(filters, req.MaxLatencyMs, req.MinDownloadMbps, req.MinUploadMbps, req.DisableFailed, req.RecoverDisabled)
 		if err != nil {
 			writeServiceError(w, err)
 			return

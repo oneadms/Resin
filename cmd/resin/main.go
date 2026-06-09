@@ -47,6 +47,7 @@ const downloadUserAgent = "clash.meta"
 
 const (
 	realTrafficBandwidthMinIngressBytes int64 = 1_000_000
+	realTrafficBandwidthMinEgressBytes  int64 = 1_000_000
 	realTrafficBandwidthMinDuration           = 500 * time.Millisecond
 	realTrafficBandwidthMaxMbps               = 10000.0
 )
@@ -326,6 +327,26 @@ func newTopologyRuntime(
 				},
 			})
 		},
+		UploadFetcher: func(hash node.Hash, url string, maxBytes int64) (int64, time.Duration, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), envCfg.ProbeTimeout)
+			defer cancel()
+			entry, ok := pool.GetEntry(hash)
+			if !ok {
+				return 0, 0, fmt.Errorf("node not found")
+			}
+			outboundPtr := entry.Outbound.Load()
+			if outboundPtr == nil {
+				return 0, 0, outbound.ErrOutboundNotReady
+			}
+			return netutil.HTTPUploadViaOutbound(ctx, *outboundPtr, url, maxBytes, netutil.OutboundHTTPOptions{
+				RequireStatusOK: true,
+				OnConnLifecycle: func(op netutil.ConnLifecycleOp) {
+					if onProbeConnLifecycle != nil {
+						onProbeConnLifecycle(op)
+					}
+				},
+			})
+		},
 		MaxEgressTestInterval: func() time.Duration {
 			return time.Duration(runtimeConfigSnapshot(runtimeCfg).MaxEgressTestInterval)
 		},
@@ -572,6 +593,7 @@ func newFlushReaders(
 				LastBandwidthProbeAttemptNs:        entry.LastBandwidthProbeAttempt.Load(),
 				LastBandwidthUpdateNs:              entry.LastBandwidthUpdate.Load(),
 				BandwidthMbps:                      entry.BandwidthMbps(),
+				UploadBandwidthMbps:                entry.UploadBandwidthMbps(),
 				ManualDisabled:                     entry.IsManuallyDisabled(),
 			}
 		},
@@ -780,7 +802,7 @@ func recordBandwidthFromFinishedEvent(pool *topology.GlobalNodePool, ev proxy.Re
 	if pool == nil || !ev.NetOK || ev.IsConnect {
 		return false
 	}
-	if ev.NodeHash == "" || ev.IngressBytes < realTrafficBandwidthMinIngressBytes {
+	if ev.NodeHash == "" {
 		return false
 	}
 	if ev.DurationNs < int64(realTrafficBandwidthMinDuration) {
@@ -791,11 +813,24 @@ func recordBandwidthFromFinishedEvent(pool *topology.GlobalNodePool, ev proxy.Re
 		return false
 	}
 
-	mbps := float64(ev.IngressBytes) * 8 * float64(time.Second) / float64(ev.DurationNs) / 1_000_000
-	if mbps <= 0 || mbps > realTrafficBandwidthMaxMbps {
+	var downloadMbps *float64
+	if ev.IngressBytes >= realTrafficBandwidthMinIngressBytes {
+		mbps := float64(ev.IngressBytes) * 8 * float64(time.Second) / float64(ev.DurationNs) / 1_000_000
+		if mbps > 0 && mbps <= realTrafficBandwidthMaxMbps {
+			downloadMbps = &mbps
+		}
+	}
+	var uploadMbps *float64
+	if ev.EgressBytes >= realTrafficBandwidthMinEgressBytes {
+		mbps := float64(ev.EgressBytes) * 8 * float64(time.Second) / float64(ev.DurationNs) / 1_000_000
+		if mbps > 0 && mbps <= realTrafficBandwidthMaxMbps {
+			uploadMbps = &mbps
+		}
+	}
+	if downloadMbps == nil && uploadMbps == nil {
 		return false
 	}
-	pool.RecordBandwidth(hash, &mbps)
+	pool.RecordBandwidthPair(hash, downloadMbps, uploadMbps)
 	return true
 }
 
@@ -935,6 +970,7 @@ func restoreBootstrapNodeDynamics(
 		entry.LastBandwidthProbeAttempt.Store(nd.LastBandwidthProbeAttemptNs)
 		entry.LastBandwidthUpdate.Store(nd.LastBandwidthUpdateNs)
 		entry.StoreBandwidthMbps(nd.BandwidthMbps)
+		entry.StoreUploadBandwidthMbps(nd.UploadBandwidthMbps)
 		entry.SetManualDisabled(nd.ManualDisabled)
 		if nd.EgressIP != "" {
 			if ip, err := netip.ParseAddr(nd.EgressIP); err == nil {

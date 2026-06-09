@@ -291,6 +291,7 @@ export function NodesPage() {
   const [pageSize, setPageSize] = useState<number>(200);
   const [maxLatencyMs, setMaxLatencyMs] = useState("1000");
   const [minDownloadMbps, setMinDownloadMbps] = useState("5");
+  const [minUploadMbps, setMinUploadMbps] = useState("2");
   const [disableFailedQuality, setDisableFailedQuality] = useState(true);
   const [recoverDisabledQuality, setRecoverDisabledQuality] = useState(false);
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
@@ -443,9 +444,11 @@ export function NodesPage() {
       await refreshNodes();
       showToast(
         "success",
-        t("带宽测试完成：下载={{bandwidth}}，耗时={{elapsed}} ms", {
-          bandwidth: formatBandwidth(result.download_mbps),
+        t("带宽测试完成：下载={{download}}，上行={{upload}}，耗时={{elapsed}}/{{uploadElapsed}} ms", {
+          download: formatBandwidth(result.download_mbps),
+          upload: formatBandwidth(result.upload_mbps),
           elapsed: result.elapsed_ms.toFixed(0),
+          uploadElapsed: result.upload_ms.toFixed(0),
         })
       );
     },
@@ -489,7 +492,7 @@ export function NodesPage() {
   });
 
   const batchProbeBandwidthMutation = useMutation({
-    mutationFn: async () => batchProbeBandwidth(activeFilters, Number(minDownloadMbps)),
+    mutationFn: async () => batchProbeBandwidth(activeFilters, Number(minDownloadMbps), Number(minUploadMbps)),
     onSuccess: async (result) => {
       await refreshNodes();
       showToast(
@@ -514,6 +517,7 @@ export function NodesPage() {
         activeFilters,
         Number(maxLatencyMs),
         Number(minDownloadMbps),
+        Number(minUploadMbps),
         disableFailedQuality,
         recoverDisabledQuality
       ),
@@ -522,7 +526,7 @@ export function NodesPage() {
       showToast(
         "success",
         t(
-          "质量筛选完成：完整测试 {{tested}}，保留 {{kept}}，恢复 {{reenabled}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟超标 {{latencyThreshold}}，带宽低标 {{bandwidthThreshold}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}",
+          "质量筛选完成：完整测试 {{tested}}，保留 {{kept}}，恢复 {{reenabled}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟超标 {{latencyThreshold}}，下载低标 {{bandwidthThreshold}}，上行低标 {{uploadBandwidthThreshold}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}",
           {
             tested: result.tested_count,
             kept: result.kept_count,
@@ -531,6 +535,7 @@ export function NodesPage() {
             failedDisabled: result.failed_disabled_count,
             latencyThreshold: result.latency_threshold_failed_count,
             bandwidthThreshold: result.bandwidth_threshold_failed_count,
+            uploadBandwidthThreshold: result.upload_bandwidth_threshold_failed_count,
             latencyFailed: result.latency_failed_count,
             bandwidthFailed: result.bandwidth_failed_count,
             skipped: result.skipped_count,
@@ -548,6 +553,8 @@ export function NodesPage() {
   const maxLatencyInvalid = !Number.isFinite(parsedMaxLatencyMs) || parsedMaxLatencyMs <= 0;
   const parsedMinDownloadMbps = Number(minDownloadMbps);
   const minDownloadMbpsInvalid = !Number.isFinite(parsedMinDownloadMbps) || parsedMinDownloadMbps <= 0;
+  const parsedMinUploadMbps = Number(minUploadMbps);
+  const minUploadMbpsInvalid = !Number.isFinite(parsedMinUploadMbps) || parsedMinUploadMbps <= 0;
 
   const markProbePending = (hash: string, action: ProbeAction): boolean => {
     if (action === "egress") {
@@ -762,6 +769,14 @@ export function NodesPage() {
       header: t("下载带宽"),
       cell: (info) => {
         const bandwidth = info.row.original.download_bandwidth_mbps;
+        return typeof bandwidth === "number" ? formatBandwidth(bandwidth) : "-";
+      },
+    }),
+    col.display({
+      id: "upload_bandwidth_mbps",
+      header: t("上行带宽"),
+      cell: (info) => {
+        const bandwidth = info.row.original.upload_bandwidth_mbps;
         return typeof bandwidth === "number" ? formatBandwidth(bandwidth) : "-";
       },
     }),
@@ -1023,7 +1038,7 @@ export function NodesPage() {
               </Button>
               <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                 <label htmlFor="node-min-bandwidth" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-                  {t("自动移除带宽低于 (Mbps)")}
+                  {t("自动移除下载低于 (Mbps)")}
                 </label>
                 <Input
                   id="node-min-bandwidth"
@@ -1036,12 +1051,27 @@ export function NodesPage() {
                   style={{ ...NODE_FILTER_CONTROL_STYLE, width: "110px" }}
                 />
               </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                <label htmlFor="node-min-upload-bandwidth" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                  {t("自动移除上行低于 (Mbps)")}
+                </label>
+                <Input
+                  id="node-min-upload-bandwidth"
+                  type="number"
+                  min="0.1"
+                  step="1"
+                  value={minUploadMbps}
+                  invalid={minUploadMbpsInvalid}
+                  onChange={(event) => setMinUploadMbps(event.target.value)}
+                  style={{ ...NODE_FILTER_CONTROL_STYLE, width: "110px" }}
+                />
+              </div>
               <Button
                 size="sm"
                 variant="danger"
-                title={t("下载固定测试数据，并自动禁用低于最低带宽的节点")}
+                title={t("测试下载和上行带宽，并自动禁用低于阈值的节点")}
                 onClick={() => batchProbeBandwidthMutation.mutate()}
-                disabled={batchProbeBandwidthMutation.isPending || minDownloadMbpsInvalid}
+                disabled={batchProbeBandwidthMutation.isPending || minDownloadMbpsInvalid || minUploadMbpsInvalid}
                 style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", alignSelf: "flex-end" }}
               >
                 <Download size={16} className={batchProbeBandwidthMutation.isPending ? "spin" : undefined} />
@@ -1097,7 +1127,8 @@ export function NodesPage() {
                 disabled={
                   batchProbeQualityMutation.isPending ||
                   maxLatencyInvalid ||
-                  minDownloadMbpsInvalid
+                  minDownloadMbpsInvalid ||
+                  minUploadMbpsInvalid
                 }
                 style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", alignSelf: "flex-end" }}
               >
@@ -1255,6 +1286,14 @@ export function NodesPage() {
                     <p>
                       {typeof detailNode.download_bandwidth_mbps === "number"
                         ? formatBandwidth(detailNode.download_bandwidth_mbps)
+                        : "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <span>{t("上行带宽")}</span>
+                    <p>
+                      {typeof detailNode.upload_bandwidth_mbps === "number"
+                        ? formatBandwidth(detailNode.upload_bandwidth_mbps)
                         : "-"}
                     </p>
                   </div>

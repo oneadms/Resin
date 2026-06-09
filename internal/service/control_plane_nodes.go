@@ -396,18 +396,19 @@ type BatchBandwidthProbeResult struct {
 
 // BatchQualityProbeResult summarizes combined latency and bandwidth screening.
 type BatchQualityProbeResult struct {
-	MatchedCount                  int                       `json:"matched_count"`
-	TestedCount                   int                       `json:"tested_count"`
-	KeptCount                     int                       `json:"kept_count"`
-	ReenabledCount                int                       `json:"reenabled_count"`
-	DisabledCount                 int                       `json:"disabled_count"`
-	FailedDisabledCount           int                       `json:"failed_disabled_count"`
-	LatencyFailedCount            int                       `json:"latency_failed_count"`
-	LatencyThresholdFailedCount   int                       `json:"latency_threshold_failed_count"`
-	BandwidthFailedCount          int                       `json:"bandwidth_failed_count"`
-	BandwidthThresholdFailedCount int                       `json:"bandwidth_threshold_failed_count"`
-	SkippedCount                  int                       `json:"skipped_count"`
-	FailureSamples                []QualityProbeNodeFailure `json:"failure_samples,omitempty"`
+	MatchedCount                        int                       `json:"matched_count"`
+	TestedCount                         int                       `json:"tested_count"`
+	KeptCount                           int                       `json:"kept_count"`
+	ReenabledCount                      int                       `json:"reenabled_count"`
+	DisabledCount                       int                       `json:"disabled_count"`
+	FailedDisabledCount                 int                       `json:"failed_disabled_count"`
+	LatencyFailedCount                  int                       `json:"latency_failed_count"`
+	LatencyThresholdFailedCount         int                       `json:"latency_threshold_failed_count"`
+	BandwidthFailedCount                int                       `json:"bandwidth_failed_count"`
+	BandwidthThresholdFailedCount       int                       `json:"bandwidth_threshold_failed_count"`
+	UploadBandwidthThresholdFailedCount int                       `json:"upload_bandwidth_threshold_failed_count"`
+	SkippedCount                        int                       `json:"skipped_count"`
+	FailureSamples                      []QualityProbeNodeFailure `json:"failure_samples,omitempty"`
 }
 
 // QualityProbeNodeFailure captures a bounded diagnostic sample for nodes that
@@ -419,15 +420,19 @@ type QualityProbeNodeFailure struct {
 	Disabled       bool     `json:"disabled"`
 	LatencyMs      *float64 `json:"latency_ms,omitempty"`
 	DownloadMbps   *float64 `json:"download_mbps,omitempty"`
+	UploadMbps     *float64 `json:"upload_mbps,omitempty"`
 	LatencyError   string   `json:"latency_error,omitempty"`
 	BandwidthError string   `json:"bandwidth_error,omitempty"`
 }
 
 // ProbeBandwidthBatch probes all enabled nodes matching filters and manually
-// disables nodes whose measured download speed is below minDownloadMbps.
-func (s *ControlPlaneService) ProbeBandwidthBatch(filters NodeFilters, minDownloadMbps float64) (*BatchBandwidthProbeResult, error) {
+// disables nodes whose measured download or upload speed is below threshold.
+func (s *ControlPlaneService) ProbeBandwidthBatch(filters NodeFilters, minDownloadMbps float64, minUploadMbps float64) (*BatchBandwidthProbeResult, error) {
 	if minDownloadMbps <= 0 || math.IsNaN(minDownloadMbps) || math.IsInf(minDownloadMbps, 0) {
 		return nil, invalidArg("min_download_mbps: must be a positive finite number")
+	}
+	if minUploadMbps <= 0 || math.IsNaN(minUploadMbps) || math.IsInf(minUploadMbps, 0) {
+		return nil, invalidArg("min_upload_mbps: must be a positive finite number")
 	}
 	if s == nil || s.ProbeMgr == nil {
 		return nil, internal("bandwidth probe manager is unavailable", nil)
@@ -460,7 +465,7 @@ func (s *ControlPlaneService) ProbeBandwidthBatch(filters NodeFilters, minDownlo
 				continue
 			}
 			tested.Add(1)
-			if probeResult.DownloadMbps < minDownloadMbps {
+			if probeResult.DownloadMbps < minDownloadMbps || probeResult.UploadMbps < minUploadMbps {
 				h, parseErr := node.ParseHex(summary.NodeHash)
 				if parseErr == nil && s.Pool.SetNodeManualDisabled(h, true) {
 					disabled.Add(1)
@@ -487,12 +492,13 @@ func (s *ControlPlaneService) ProbeBandwidthBatch(filters NodeFilters, minDownlo
 	return result, nil
 }
 
-// ProbeQualityBatch measures both latency and download bandwidth, then disables
-// nodes that fail either successfully measured threshold.
+// ProbeQualityBatch measures latency plus download/upload bandwidth, then
+// disables nodes that fail any successfully measured threshold.
 func (s *ControlPlaneService) ProbeQualityBatch(
 	filters NodeFilters,
 	maxLatencyMs float64,
 	minDownloadMbps float64,
+	minUploadMbps float64,
 	disableFailed bool,
 	recoverDisabled bool,
 ) (*BatchQualityProbeResult, error) {
@@ -501,6 +507,9 @@ func (s *ControlPlaneService) ProbeQualityBatch(
 	}
 	if minDownloadMbps <= 0 || math.IsNaN(minDownloadMbps) || math.IsInf(minDownloadMbps, 0) {
 		return nil, invalidArg("min_download_mbps: must be a positive finite number")
+	}
+	if minUploadMbps <= 0 || math.IsNaN(minUploadMbps) || math.IsInf(minUploadMbps, 0) {
+		return nil, invalidArg("min_upload_mbps: must be a positive finite number")
 	}
 	if s == nil || s.ProbeMgr == nil {
 		return nil, internal("probe manager is unavailable", nil)
@@ -524,11 +533,12 @@ func (s *ControlPlaneService) ProbeQualityBatch(
 	var latencyThresholdFailed atomic.Int64
 	var bandwidthFailed atomic.Int64
 	var bandwidthThresholdFailed atomic.Int64
+	var uploadBandwidthThresholdFailed atomic.Int64
 	var sampleMu sync.Mutex
 	var skipped atomic.Int64
 	var wg sync.WaitGroup
 
-	recordFailureSample := func(summary NodeSummary, reasons []string, disabled bool, latencyMs *float64, downloadMbps *float64, latencyErr error, bandwidthErr error) {
+	recordFailureSample := func(summary NodeSummary, reasons []string, disabled bool, latencyMs *float64, downloadMbps *float64, uploadMbps *float64, latencyErr error, bandwidthErr error) {
 		if len(reasons) == 0 {
 			return
 		}
@@ -548,6 +558,7 @@ func (s *ControlPlaneService) ProbeQualityBatch(
 			Disabled:     disabled,
 			LatencyMs:    latencyMs,
 			DownloadMbps: downloadMbps,
+			UploadMbps:   uploadMbps,
 		}
 		if latencyErr != nil {
 			sample.LatencyError = latencyErr.Error()
@@ -581,6 +592,7 @@ func (s *ControlPlaneService) ProbeQualityBatch(
 			var reasons []string
 			var latencyMs *float64
 			var downloadMbps *float64
+			var uploadMbps *float64
 			shouldDisable := false
 			if latencyErr != nil {
 				reasons = append(reasons, "latency_probe_failed")
@@ -598,9 +610,16 @@ func (s *ControlPlaneService) ProbeQualityBatch(
 			} else {
 				bandwidthValue := bandwidthResult.DownloadMbps
 				downloadMbps = &bandwidthValue
+				uploadValue := bandwidthResult.UploadMbps
+				uploadMbps = &uploadValue
 				if bandwidthResult.DownloadMbps < minDownloadMbps {
 					bandwidthThresholdFailed.Add(1)
-					reasons = append(reasons, "bandwidth_below_threshold")
+					reasons = append(reasons, "download_bandwidth_below_threshold")
+					shouldDisable = true
+				}
+				if bandwidthResult.UploadMbps < minUploadMbps {
+					uploadBandwidthThresholdFailed.Add(1)
+					reasons = append(reasons, "upload_bandwidth_below_threshold")
 					shouldDisable = true
 				}
 			}
@@ -627,7 +646,7 @@ func (s *ControlPlaneService) ProbeQualityBatch(
 				}
 				kept.Add(1)
 			}
-			recordFailureSample(summary, reasons, disabledNow || (summary.ManualDisabled && !reenabledNow), latencyMs, downloadMbps, latencyErr, bandwidthErr)
+			recordFailureSample(summary, reasons, disabledNow || (summary.ManualDisabled && !reenabledNow), latencyMs, downloadMbps, uploadMbps, latencyErr, bandwidthErr)
 		}
 	}
 
@@ -651,6 +670,7 @@ func (s *ControlPlaneService) ProbeQualityBatch(
 	result.LatencyThresholdFailedCount = int(latencyThresholdFailed.Load())
 	result.BandwidthFailedCount = int(bandwidthFailed.Load())
 	result.BandwidthThresholdFailedCount = int(bandwidthThresholdFailed.Load())
+	result.UploadBandwidthThresholdFailedCount = int(uploadBandwidthThresholdFailed.Load())
 	result.SkippedCount = int(skipped.Load())
 	return result, nil
 }

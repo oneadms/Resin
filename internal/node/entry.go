@@ -46,6 +46,7 @@ type NodeEntry struct {
 	LastBandwidthProbeAttempt        atomic.Int64
 	LastBandwidthUpdate              atomic.Int64
 	bandwidthMbpsBits                atomic.Uint64
+	uploadBandwidthMbpsBits          atomic.Uint64
 	LatencyTable                     *LatencyTable // per-domain latency stats; nil if not initialized
 
 	// Outbound instance for this node.
@@ -245,6 +246,14 @@ func (e *NodeEntry) BandwidthMbps() float64 {
 	return math.Float64frombits(e.bandwidthMbpsBits.Load())
 }
 
+// UploadBandwidthMbps returns the latest smoothed upload bandwidth sample.
+func (e *NodeEntry) UploadBandwidthMbps() float64 {
+	if e == nil {
+		return 0
+	}
+	return math.Float64frombits(e.uploadBandwidthMbpsBits.Load())
+}
+
 // StoreBandwidthMbps replaces the smoothed bandwidth value.
 func (e *NodeEntry) StoreBandwidthMbps(mbps float64) {
 	if e == nil || mbps <= 0 || math.IsNaN(mbps) || math.IsInf(mbps, 0) {
@@ -253,20 +262,40 @@ func (e *NodeEntry) StoreBandwidthMbps(mbps float64) {
 	e.bandwidthMbpsBits.Store(math.Float64bits(mbps))
 }
 
+// StoreUploadBandwidthMbps replaces the smoothed upload bandwidth value.
+func (e *NodeEntry) StoreUploadBandwidthMbps(mbps float64) {
+	if e == nil || mbps <= 0 || math.IsNaN(mbps) || math.IsInf(mbps, 0) {
+		return
+	}
+	e.uploadBandwidthMbpsBits.Store(math.Float64bits(mbps))
+}
+
 // UpdateBandwidthMbps applies a lightweight EWMA to reduce single-run noise.
 func (e *NodeEntry) UpdateBandwidthMbps(sampleMbps float64) float64 {
 	if e == nil || sampleMbps <= 0 || math.IsNaN(sampleMbps) || math.IsInf(sampleMbps, 0) {
 		return e.BandwidthMbps()
 	}
+	return updateBandwidthEWMA(&e.bandwidthMbpsBits, sampleMbps)
+}
+
+// UpdateUploadBandwidthMbps applies a lightweight EWMA to reduce single-run noise.
+func (e *NodeEntry) UpdateUploadBandwidthMbps(sampleMbps float64) float64 {
+	if e == nil || sampleMbps <= 0 || math.IsNaN(sampleMbps) || math.IsInf(sampleMbps, 0) {
+		return e.UploadBandwidthMbps()
+	}
+	return updateBandwidthEWMA(&e.uploadBandwidthMbpsBits, sampleMbps)
+}
+
+func updateBandwidthEWMA(bits *atomic.Uint64, sampleMbps float64) float64 {
 	const sampleWeight = 0.35
 	for {
-		oldBits := e.bandwidthMbpsBits.Load()
+		oldBits := bits.Load()
 		old := math.Float64frombits(oldBits)
 		next := sampleMbps
 		if old > 0 {
 			next = old*(1-sampleWeight) + sampleMbps*sampleWeight
 		}
-		if e.bandwidthMbpsBits.CompareAndSwap(oldBits, math.Float64bits(next)) {
+		if bits.CompareAndSwap(oldBits, math.Float64bits(next)) {
 			return next
 		}
 	}

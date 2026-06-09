@@ -115,6 +115,7 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	entry1.LastBandwidthProbeAttempt.Store(bandwidthAttemptAt)
 	entry1.LastBandwidthUpdate.Store(bandwidthUpdateAt)
 	entry1.StoreBandwidthMbps(88.5)
+	entry1.StoreUploadBandwidthMbps(18.5)
 	entry1.FailureCount.Store(2)
 	if entry1.LatencyTable == nil {
 		t.Fatal("node latency table should be initialized")
@@ -260,6 +261,9 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	}
 	if got := entry2.BandwidthMbps(); got != 88.5 {
 		t.Fatalf("bandwidth_mbps: got %v, want 88.5", got)
+	}
+	if got := entry2.UploadBandwidthMbps(); got != 18.5 {
+		t.Fatalf("upload_bandwidth_mbps: got %v, want 18.5", got)
 	}
 	if entry2.LatencyTable == nil {
 		t.Fatal("latency table should be restored")

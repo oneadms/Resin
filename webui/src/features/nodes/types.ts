@@ -17,6 +17,7 @@ export type NodeSummary = {
   egress_ip?: string;
   reference_latency_ms?: number;
   download_bandwidth_mbps?: number;
+  upload_bandwidth_mbps?: number;
   region?: string;
   last_egress_update?: string;
   last_latency_probe_attempt?: string;
@@ -79,9 +80,13 @@ export type BatchLatencyProbeResult = {
 
 export type BandwidthProbeResult = {
   download_mbps: number;
+  upload_mbps: number;
   bytes: number;
+  upload_bytes: number;
   elapsed_ms: number;
+  upload_ms: number;
   source_url: string;
+  upload_url: string;
 };
 
 export type BatchBandwidthProbeResult = {
@@ -103,6 +108,7 @@ export type BatchQualityProbeResult = {
   latency_threshold_failed_count: number;
   bandwidth_failed_count: number;
   bandwidth_threshold_failed_count: number;
+  upload_bandwidth_threshold_failed_count: number;
   skipped_count: number;
   failure_samples?: QualityProbeNodeFailure[];
 };
@@ -114,6 +120,7 @@ export type QualityProbeNodeFailure = {
   disabled: boolean;
   latency_ms?: number;
   download_mbps?: number;
+  upload_mbps?: number;
   latency_error?: string;
   bandwidth_error?: string;
 };

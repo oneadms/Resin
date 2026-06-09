@@ -2,6 +2,7 @@ package netutil
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,45 @@ func TestHTTPDownloadViaOutbound_StreamsUpToLimit(t *testing.T) {
 	}
 	if downloaded != maxBytes {
 		t.Fatalf("downloaded = %d, want %d", downloaded, maxBytes)
+	}
+	if elapsed <= 0 {
+		t.Fatalf("elapsed = %v, want positive duration", elapsed)
+	}
+}
+
+func TestHTTPUploadViaOutbound_StreamsRequestBody(t *testing.T) {
+	const uploadBytes = 2048
+	received := make(chan int64, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, err := io.Copy(io.Discard, r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		received <- n
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	ob, err := (&testutil.StubOutboundBuilder{}).Build(nil)
+	if err != nil {
+		t.Fatalf("build outbound: %v", err)
+	}
+	uploaded, elapsed, err := HTTPUploadViaOutbound(
+		context.Background(),
+		ob,
+		srv.URL,
+		uploadBytes,
+		OutboundHTTPOptions{RequireStatusOK: true},
+	)
+	if err != nil {
+		t.Fatalf("HTTPUploadViaOutbound: %v", err)
+	}
+	if uploaded != uploadBytes {
+		t.Fatalf("uploaded = %d, want %d", uploaded, uploadBytes)
+	}
+	if got := <-received; got != uploadBytes {
+		t.Fatalf("server received = %d, want %d", got, uploadBytes)
 	}
 	if elapsed <= 0 {
 		t.Fatalf("elapsed = %v, want positive duration", elapsed)

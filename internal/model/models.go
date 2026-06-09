@@ -62,6 +62,7 @@ type NodeDynamic struct {
 	LastBandwidthProbeAttemptNs        int64   `json:"last_bandwidth_probe_attempt_ns"`
 	LastBandwidthUpdateNs              int64   `json:"last_bandwidth_update_ns"`
 	BandwidthMbps                      float64 `json:"bandwidth_mbps"`
+	UploadBandwidthMbps                float64 `json:"upload_bandwidth_mbps"`
 	ManualDisabled                     bool    `json:"manual_disabled"`
 }
 

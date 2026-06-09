@@ -24,6 +24,7 @@ type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
   egress_ip?: string | null;
   reference_latency_ms?: number | null;
   download_bandwidth_mbps?: number | null;
+  upload_bandwidth_mbps?: number | null;
   region?: string | null;
   last_egress_update?: string | null;
   last_latency_probe_attempt?: string | null;
@@ -34,7 +35,7 @@ type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
 };
 
 function normalizeNode(raw: ApiNodeSummary): NodeSummary {
-  const { reference_latency_ms, download_bandwidth_mbps, ...rest } = raw;
+  const { reference_latency_ms, download_bandwidth_mbps, upload_bandwidth_mbps, ...rest } = raw;
   const normalized: NodeSummary = {
     ...rest,
     enabled: raw.enabled !== false,
@@ -59,6 +60,9 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
   }
   if (typeof download_bandwidth_mbps === "number") {
     normalized.download_bandwidth_mbps = download_bandwidth_mbps;
+  }
+  if (typeof upload_bandwidth_mbps === "number") {
+    normalized.upload_bandwidth_mbps = upload_bandwidth_mbps;
   }
 
   return normalized;
@@ -155,13 +159,14 @@ export async function probeBandwidth(hash: string): Promise<BandwidthProbeResult
 
 export async function batchProbeBandwidth(
   filters: NodeListFilters,
-  minDownloadMbps: number
+  minDownloadMbps: number,
+  minUploadMbps: number
 ): Promise<BatchBandwidthProbeResult> {
   const query = new URLSearchParams();
   appendNodeFilters(query, filters);
   return apiRequest<BatchBandwidthProbeResult>(`${basePath}/actions/probe-bandwidth?${query.toString()}`, {
     method: "POST",
-    body: { min_download_mbps: minDownloadMbps },
+    body: { min_download_mbps: minDownloadMbps, min_upload_mbps: minUploadMbps },
   });
 }
 
@@ -169,6 +174,7 @@ export async function batchProbeQuality(
   filters: NodeListFilters,
   maxLatencyMs: number,
   minDownloadMbps: number,
+  minUploadMbps: number,
   disableFailed: boolean,
   recoverDisabled: boolean
 ): Promise<BatchQualityProbeResult> {
@@ -179,6 +185,7 @@ export async function batchProbeQuality(
     body: {
       max_latency_ms: maxLatencyMs,
       min_download_mbps: minDownloadMbps,
+      min_upload_mbps: minUploadMbps,
       disable_failed: disableFailed,
       recover_disabled: recoverDisabled,
     },

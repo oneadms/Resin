@@ -26,6 +26,7 @@ func TestRecordBandwidthFromFinishedEvent_RecordsLargeSuccessfulResponse(t *test
 		NodeHash:     hash.Hex(),
 		NetOK:        true,
 		IngressBytes: 2_000_000,
+		EgressBytes:  1_500_000,
 		DurationNs:   int64(time.Second),
 	})
 	if !ok {
@@ -38,6 +39,9 @@ func TestRecordBandwidthFromFinishedEvent_RecordsLargeSuccessfulResponse(t *test
 	}
 	if got := entry.BandwidthMbps(); got != 16 {
 		t.Fatalf("bandwidth Mbps = %v, want 16", got)
+	}
+	if got := entry.UploadBandwidthMbps(); got != 12 {
+		t.Fatalf("upload bandwidth Mbps = %v, want 12", got)
 	}
 	if entry.LastBandwidthProbeAttempt.Load() <= 0 || entry.LastBandwidthUpdate.Load() <= 0 {
 		t.Fatal("bandwidth timestamps were not updated")
@@ -53,7 +57,7 @@ func TestRecordBandwidthFromFinishedEvent_IgnoresNoisySamples(t *testing.T) {
 	cases := []proxy.RequestFinishedEvent{
 		{NodeHash: hash.Hex(), NetOK: false, IngressBytes: 2_000_000, DurationNs: int64(time.Second)},
 		{NodeHash: hash.Hex(), NetOK: true, IsConnect: true, IngressBytes: 2_000_000, DurationNs: int64(time.Second)},
-		{NodeHash: hash.Hex(), NetOK: true, IngressBytes: realTrafficBandwidthMinIngressBytes - 1, DurationNs: int64(time.Second)},
+		{NodeHash: hash.Hex(), NetOK: true, IngressBytes: realTrafficBandwidthMinIngressBytes - 1, EgressBytes: realTrafficBandwidthMinEgressBytes - 1, DurationNs: int64(time.Second)},
 		{NodeHash: hash.Hex(), NetOK: true, IngressBytes: 2_000_000, DurationNs: int64(realTrafficBandwidthMinDuration) - 1},
 		{NodeHash: "not-a-node-hash", NetOK: true, IngressBytes: 2_000_000, DurationNs: int64(time.Second)},
 	}
@@ -69,6 +73,9 @@ func TestRecordBandwidthFromFinishedEvent_IgnoresNoisySamples(t *testing.T) {
 	}
 	if got := entry.BandwidthMbps(); got != 0 {
 		t.Fatalf("bandwidth Mbps = %v, want 0", got)
+	}
+	if got := entry.UploadBandwidthMbps(); got != 0 {
+		t.Fatalf("upload bandwidth Mbps = %v, want 0", got)
 	}
 	if got := entry.LastBandwidthProbeAttempt.Load(); got != 0 {
 		t.Fatalf("last bandwidth attempt = %d, want 0", got)

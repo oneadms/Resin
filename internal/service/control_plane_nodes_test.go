@@ -505,6 +505,16 @@ func TestProbeBandwidthBatch_DisablesOnlyNodesBelowThreshold(t *testing.T) {
 				return 0, 0, errors.New("unexpected node")
 			}
 		},
+		UploadFetcher: func(hash node.Hash, _ string, _ int64) (int64, time.Duration, error) {
+			switch hash {
+			case fastHash, slowHash:
+				return 2_000_000, time.Second, nil
+			case failedHash:
+				return 0, 0, errors.New("upload failed")
+			default:
+				return 0, 0, errors.New("unexpected node")
+			}
+		},
 	})
 
 	cp := &ControlPlaneService{
@@ -514,7 +524,7 @@ func TestProbeBandwidthBatch_DisablesOnlyNodesBelowThreshold(t *testing.T) {
 		ProbeMgr: probeMgr,
 	}
 
-	result, err := cp.ProbeBandwidthBatch(NodeFilters{SubscriptionID: &sub.ID}, 10)
+	result, err := cp.ProbeBandwidthBatch(NodeFilters{SubscriptionID: &sub.ID}, 10, 5)
 	if err != nil {
 		t.Fatalf("ProbeBandwidthBatch: %v", err)
 	}
@@ -577,6 +587,16 @@ func TestProbeQualityBatch_UsesBothThresholdsAndKeepsFailures(t *testing.T) {
 				return 0, 0, errors.New("unexpected node")
 			}
 		},
+		UploadFetcher: func(hash node.Hash, _ string, _ int64) (int64, time.Duration, error) {
+			switch hash {
+			case goodHash, highLatencyHash, lowBandwidthHash:
+				return 2_000_000, time.Second, nil
+			case failedHash:
+				return 0, 0, errors.New("upload failed")
+			default:
+				return 0, 0, errors.New("unexpected node")
+			}
+		},
 	})
 	cp := &ControlPlaneService{
 		Pool:     pool,
@@ -585,7 +605,7 @@ func TestProbeQualityBatch_UsesBothThresholdsAndKeepsFailures(t *testing.T) {
 		ProbeMgr: probeMgr,
 	}
 
-	result, err := cp.ProbeQualityBatch(NodeFilters{SubscriptionID: &sub.ID}, 1000, 10, false, false)
+	result, err := cp.ProbeQualityBatch(NodeFilters{SubscriptionID: &sub.ID}, 1000, 10, 5, false, false)
 	if err != nil {
 		t.Fatalf("ProbeQualityBatch: %v", err)
 	}
@@ -607,7 +627,7 @@ func TestProbeQualityBatch_UsesBothThresholdsAndKeepsFailures(t *testing.T) {
 		t.Fatal("node with unknown quality should not be disabled")
 	}
 
-	result, err = cp.ProbeQualityBatch(NodeFilters{SubscriptionID: &sub.ID}, 1000, 10, true, false)
+	result, err = cp.ProbeQualityBatch(NodeFilters{SubscriptionID: &sub.ID}, 1000, 10, 5, true, false)
 	if err != nil {
 		t.Fatalf("ProbeQualityBatch(strict): %v", err)
 	}
@@ -661,6 +681,12 @@ func TestProbeQualityBatch_RecoverDisabledReenablesPassingManualDisabledNode(t *
 			}
 			return 5_000_000, 2 * time.Second, nil
 		},
+		UploadFetcher: func(hash node.Hash, _ string, _ int64) (int64, time.Duration, error) {
+			if hash != recoverHash {
+				return 0, 0, errors.New("unexpected node")
+			}
+			return 2_000_000, time.Second, nil
+		},
 	})
 	cp := &ControlPlaneService{
 		Pool:     pool,
@@ -669,7 +695,7 @@ func TestProbeQualityBatch_RecoverDisabledReenablesPassingManualDisabledNode(t *
 		ProbeMgr: probeMgr,
 	}
 
-	result, err := cp.ProbeQualityBatch(NodeFilters{SubscriptionID: &sub.ID}, 1000, 10, true, true)
+	result, err := cp.ProbeQualityBatch(NodeFilters{SubscriptionID: &sub.ID}, 1000, 10, 5, true, true)
 	if err != nil {
 		t.Fatalf("ProbeQualityBatch(recover): %v", err)
 	}

@@ -9,8 +9,10 @@ import (
 const (
 	bandwidthFreshnessWindow    = 24 * time.Hour
 	representativeResponseBytes = 4_000_000
+	representativeRequestBytes  = 500_000
 	unknownLatencyPenalty       = 1500 * time.Millisecond
 	unknownBandwidthMbps        = 1.0
+	unknownUploadBandwidthMbps  = 1.0
 )
 
 func lookupRecentDomainLatency(
@@ -93,12 +95,27 @@ func recentBandwidthMbps(entry *node.NodeEntry, now time.Time) (float64, bool) {
 	return mbps, true
 }
 
+func recentUploadBandwidthMbps(entry *node.NodeEntry, now time.Time) (float64, bool) {
+	if entry == nil {
+		return 0, false
+	}
+	updatedNs := entry.LastBandwidthUpdate.Load()
+	mbps := entry.UploadBandwidthMbps()
+	if updatedNs <= 0 || mbps <= 0 || now.Sub(time.Unix(0, updatedNs)) > bandwidthFreshnessWindow {
+		return 0, false
+	}
+	return mbps, true
+}
+
 // performanceCostMs estimates time-to-first-byte plus transfer time for a
 // representative AI response. Lower is better.
-func performanceCostMs(latency time.Duration, bandwidthMbps float64) float64 {
+func performanceCostMs(latency time.Duration, downloadMbps float64, uploadMbps float64) float64 {
 	cost := float64(latency) / float64(time.Millisecond)
-	if bandwidthMbps > 0 {
-		cost += float64(representativeResponseBytes*8) / bandwidthMbps / 1000
+	if uploadMbps > 0 {
+		cost += float64(representativeRequestBytes*8) / uploadMbps / 1000
+	}
+	if downloadMbps > 0 {
+		cost += float64(representativeResponseBytes*8) / downloadMbps / 1000
 	}
 	return cost
 }
@@ -121,7 +138,11 @@ func entryPerformanceCostMs(
 	if measuredBandwidth, ok := recentBandwidthMbps(entry, now); ok {
 		bandwidth = measuredBandwidth
 	}
-	return performanceCostMs(latency, bandwidth)
+	uploadBandwidth := unknownUploadBandwidthMbps
+	if measuredUploadBandwidth, ok := recentUploadBandwidthMbps(entry, now); ok {
+		uploadBandwidth = measuredUploadBandwidth
+	}
+	return performanceCostMs(latency, bandwidth, uploadBandwidth)
 }
 
 func comparePerformanceCosts(

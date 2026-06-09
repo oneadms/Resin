@@ -239,6 +239,18 @@ func TestProbeBandwidthSync_CalculatesMbps(t *testing.T) {
 			}
 			return 5_000_000, 2 * time.Second, nil
 		},
+		UploadFetcher: func(gotHash node.Hash, url string, maxBytes int64) (int64, time.Duration, error) {
+			if gotHash != hash {
+				t.Fatalf("upload hash = %s, want %s", gotHash.Hex(), hash.Hex())
+			}
+			if url != defaultUploadTestURLs[0] {
+				t.Fatalf("upload url = %q, want %q", url, defaultUploadTestURLs[0])
+			}
+			if maxBytes != defaultBandwidthTestBytes {
+				t.Fatalf("upload maxBytes = %d, want %d", maxBytes, defaultBandwidthTestBytes)
+			}
+			return 2_000_000, time.Second, nil
+		},
 	})
 
 	result, err := mgr.ProbeBandwidthSync(hash)
@@ -248,14 +260,23 @@ func TestProbeBandwidthSync_CalculatesMbps(t *testing.T) {
 	if result.DownloadMbps != 20 {
 		t.Fatalf("DownloadMbps = %v, want 20", result.DownloadMbps)
 	}
+	if result.UploadMbps != 16 {
+		t.Fatalf("UploadMbps = %v, want 16", result.UploadMbps)
+	}
 	if result.Bytes != 5_000_000 || result.ElapsedMs != 2000 {
 		t.Fatalf("result = %+v", result)
+	}
+	if result.UploadBytes != 2_000_000 || result.UploadMs != 1000 {
+		t.Fatalf("upload result = %+v", result)
 	}
 	if result.SourceURL != defaultBandwidthTestURLs[0] {
 		t.Fatalf("SourceURL = %q, want %q", result.SourceURL, defaultBandwidthTestURLs[0])
 	}
 	if got := entry.BandwidthMbps(); got != 20 {
 		t.Fatalf("stored bandwidth = %v, want 20", got)
+	}
+	if got := entry.UploadBandwidthMbps(); got != 16 {
+		t.Fatalf("stored upload bandwidth = %v, want 16", got)
 	}
 	if entry.LastBandwidthProbeAttempt.Load() <= 0 || entry.LastBandwidthUpdate.Load() <= 0 {
 		t.Fatal("bandwidth probe timestamps were not recorded")
@@ -287,6 +308,9 @@ func TestProbeBandwidthSync_FallsBackToSecondarySource(t *testing.T) {
 				t.Fatalf("unexpected fallback URL %q", url)
 			}
 			return 5_000_000, 4 * time.Second, nil
+		},
+		UploadFetcher: func(node.Hash, string, int64) (int64, time.Duration, error) {
+			return 1_000_000, time.Second, nil
 		},
 	})
 
@@ -320,6 +344,9 @@ func TestProbeBandwidthSync_UsesLargePartialSampleOnTimeout(t *testing.T) {
 		BandwidthFetcher: func(node.Hash, string, int64) (int64, time.Duration, error) {
 			return 1_000_000, 4 * time.Second, context.DeadlineExceeded
 		},
+		UploadFetcher: func(node.Hash, string, int64) (int64, time.Duration, error) {
+			return 512_000, 2 * time.Second, context.DeadlineExceeded
+		},
 	})
 
 	result, err := mgr.ProbeBandwidthSync(hash)
@@ -328,6 +355,9 @@ func TestProbeBandwidthSync_UsesLargePartialSampleOnTimeout(t *testing.T) {
 	}
 	if result.DownloadMbps != 2 {
 		t.Fatalf("DownloadMbps = %v, want 2", result.DownloadMbps)
+	}
+	if result.UploadMbps != 2.048 {
+		t.Fatalf("UploadMbps = %v, want 2.048", result.UploadMbps)
 	}
 }
 

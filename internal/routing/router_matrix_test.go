@@ -348,6 +348,39 @@ func TestPerformanceCost_EqualLatencyPrefersHigherBandwidth(t *testing.T) {
 	}
 }
 
+func TestPerformanceCost_EqualDownloadPrefersHigherUploadBandwidth(t *testing.T) {
+	pool := newRouterTestPool()
+
+	fastUploadHash, fastUploadEntry := newRoutableEntry(t, `{"id":"fast-upload-bandwidth"}`, "203.0.113.44")
+	slowUploadHash, slowUploadEntry := newRoutableEntry(t, `{"id":"slow-upload-bandwidth"}`, "203.0.113.45")
+	fastUploadEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	slowUploadEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	waitForDomainLatency(t, fastUploadEntry, "example.com")
+	waitForDomainLatency(t, slowUploadEntry, "example.com")
+	fastUploadEntry.StoreBandwidthMbps(50)
+	slowUploadEntry.StoreBandwidthMbps(50)
+	fastUploadEntry.StoreUploadBandwidthMbps(50)
+	slowUploadEntry.StoreUploadBandwidthMbps(2)
+	nowNs := time.Now().UnixNano()
+	fastUploadEntry.LastBandwidthUpdate.Store(nowNs)
+	slowUploadEntry.LastBandwidthUpdate.Store(nowNs)
+
+	pool.addEntry(fastUploadHash, fastUploadEntry)
+	pool.addEntry(slowUploadHash, slowUploadEntry)
+
+	fastCost, slowCost := comparePerformanceCosts(
+		fastUploadHash,
+		slowUploadHash,
+		pool,
+		"example.com",
+		nil,
+		10*time.Minute,
+	)
+	if fastCost >= slowCost {
+		t.Fatalf("fast upload cost = %v, slow upload cost = %v; higher upload bandwidth should be preferred", fastCost, slowCost)
+	}
+}
+
 func TestPerformanceCost_PrefersMeasuredBandwidthOverUnknown(t *testing.T) {
 	pool := newRouterTestPool()
 

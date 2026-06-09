@@ -93,6 +93,7 @@ func TestCacheRepo_NodesDynamic_BulkUpsertAndLoad(t *testing.T) {
 			LastBandwidthProbeAttemptNs:        1000,
 			LastBandwidthUpdateNs:              1100,
 			BandwidthMbps:                      42.5,
+			UploadBandwidthMbps:                12.5,
 		},
 	}
 	if err := repo.BulkUpsertNodesDynamic(nodes); err != nil {
@@ -114,7 +115,8 @@ func TestCacheRepo_NodesDynamic_BulkUpsertAndLoad(t *testing.T) {
 		loaded[0].LastEgressUpdateAttemptNs != 900 ||
 		loaded[0].LastBandwidthProbeAttemptNs != 1000 ||
 		loaded[0].LastBandwidthUpdateNs != 1100 ||
-		loaded[0].BandwidthMbps != 42.5 {
+		loaded[0].BandwidthMbps != 42.5 ||
+		loaded[0].UploadBandwidthMbps != 12.5 {
 		t.Fatalf("unexpected probe attempt fields: %+v", loaded[0])
 	}
 

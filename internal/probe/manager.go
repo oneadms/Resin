@@ -39,6 +39,8 @@ type ProbeConfig struct {
 	Fetcher Fetcher
 	// BandwidthFetcher streams HTTP response data via node hash.
 	BandwidthFetcher BandwidthFetcher
+	// UploadFetcher streams HTTP request data via node hash.
+	UploadFetcher BandwidthFetcher
 
 	// Interval thresholds — closures for hot-reload from RuntimeConfig.
 	MaxEgressTestInterval           func() time.Duration
@@ -67,6 +69,7 @@ type ProbeManager struct {
 	wg               sync.WaitGroup
 	fetcher          Fetcher
 	bandwidthFetcher BandwidthFetcher
+	uploadFetcher    BandwidthFetcher
 	workerCount      int
 	taskQueue        *probeTaskQueue
 	taskStates       *xsync.Map[probeTaskKey, *probeTaskState]
@@ -95,6 +98,11 @@ const (
 var defaultBandwidthTestURLs = [...]string{
 	"https://speed.cloudflare.com/__down?bytes=5000000",
 	"https://proof.ovh.net/files/10Mb.dat",
+}
+
+var defaultUploadTestURLs = [...]string{
+	"https://speed.cloudflare.com/__up",
+	"https://httpbin.org/post",
 }
 
 type probePriority uint8
@@ -283,6 +291,7 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		stopCh:                          make(chan struct{}),
 		fetcher:                         cfg.Fetcher,
 		bandwidthFetcher:                cfg.BandwidthFetcher,
+		uploadFetcher:                   cfg.UploadFetcher,
 		workerCount:                     conc,
 		taskQueue:                       newProbeTaskQueue(queueCap, queueCap, cfg.ChooseNormalWhenBoth),
 		taskStates:                      xsync.NewMap[probeTaskKey, *probeTaskState](),
@@ -296,18 +305,25 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 	}
 }
 
-// BandwidthProbeResult holds the results of a synchronous download probe.
+// BandwidthProbeResult holds the results of a synchronous download/upload probe.
 type BandwidthProbeResult struct {
 	DownloadMbps float64 `json:"download_mbps"`
+	UploadMbps   float64 `json:"upload_mbps"`
 	Bytes        int64   `json:"bytes"`
+	UploadBytes  int64   `json:"upload_bytes"`
 	ElapsedMs    float64 `json:"elapsed_ms"`
+	UploadMs     float64 `json:"upload_ms"`
 	SourceURL    string  `json:"source_url"`
+	UploadURL    string  `json:"upload_url"`
 }
 
-// ProbeBandwidthSync performs a blocking download through a node.
+// ProbeBandwidthSync performs blocking download and upload probes through a node.
 func (m *ProbeManager) ProbeBandwidthSync(hash node.Hash) (*BandwidthProbeResult, error) {
 	if m.bandwidthFetcher == nil {
 		return nil, fmt.Errorf("no bandwidth fetcher configured")
+	}
+	if m.uploadFetcher == nil {
+		return nil, fmt.Errorf("no upload fetcher configured")
 	}
 	select {
 	case <-m.stopCh:
@@ -323,40 +339,57 @@ func (m *ProbeManager) ProbeBandwidthSync(hash node.Hash) (*BandwidthProbeResult
 		return nil, fmt.Errorf("node outbound not ready")
 	}
 
-	var (
-		bytes      int64
-		elapsed    time.Duration
-		sourceURL  string
-		sourceErrs []error
-	)
-	for _, testURL := range defaultBandwidthTestURLs {
-		var fetchErr error
-		bytes, elapsed, fetchErr = m.bandwidthFetcher(hash, testURL, defaultBandwidthTestBytes)
-		if fetchErr == nil || (bytes >= minPartialBandwidthBytes && elapsed >= minPartialBandwidthTime) {
-			sourceURL = testURL
-			break
-		}
-		sourceErrs = append(sourceErrs, fmt.Errorf("%s: %w", testURL, fetchErr))
-	}
-	if sourceURL == "" {
-		m.pool.RecordBandwidth(hash, nil)
-		err := errors.Join(sourceErrs...)
+	bytes, elapsed, sourceURL, downloadErr := m.probeBandwidthSources(hash, m.bandwidthFetcher, defaultBandwidthTestURLs[:], defaultBandwidthTestBytes)
+	uploadBytes, uploadElapsed, uploadURL, uploadErr := m.probeBandwidthSources(hash, m.uploadFetcher, defaultUploadTestURLs[:], defaultBandwidthTestBytes)
+
+	if downloadErr != nil && uploadErr != nil {
+		m.pool.RecordBandwidthPair(hash, nil, nil)
+		err := errors.Join(downloadErr, uploadErr)
 		log.Printf("[probe] bandwidth failed node=%s: %v", hash.Hex(), err)
 		return nil, fmt.Errorf("bandwidth probe failed: %w", err)
 	}
-	if bytes <= 0 || elapsed <= 0 {
-		m.pool.RecordBandwidth(hash, nil)
-		return nil, fmt.Errorf("bandwidth probe returned invalid sample")
+	if downloadErr != nil {
+		m.pool.RecordBandwidthPair(hash, nil, nil)
+		return nil, fmt.Errorf("download bandwidth probe failed: %w", downloadErr)
+	}
+	if uploadErr != nil {
+		m.pool.RecordBandwidthPair(hash, nil, nil)
+		return nil, fmt.Errorf("upload bandwidth probe failed: %w", uploadErr)
 	}
 
 	mbps := float64(bytes*8) / elapsed.Seconds() / 1_000_000
-	m.pool.RecordBandwidth(hash, &mbps)
+	uploadMbps := float64(uploadBytes*8) / uploadElapsed.Seconds() / 1_000_000
+	m.pool.RecordBandwidthPair(hash, &mbps, &uploadMbps)
 	return &BandwidthProbeResult{
 		DownloadMbps: mbps,
+		UploadMbps:   uploadMbps,
 		Bytes:        bytes,
+		UploadBytes:  uploadBytes,
 		ElapsedMs:    float64(elapsed) / float64(time.Millisecond),
+		UploadMs:     float64(uploadElapsed) / float64(time.Millisecond),
 		SourceURL:    sourceURL,
+		UploadURL:    uploadURL,
 	}, nil
+}
+
+func (m *ProbeManager) probeBandwidthSources(
+	hash node.Hash,
+	fetcher BandwidthFetcher,
+	urls []string,
+	maxBytes int64,
+) (int64, time.Duration, string, error) {
+	var sourceErrs []error
+	for _, testURL := range urls {
+		bytes, elapsed, fetchErr := fetcher(hash, testURL, maxBytes)
+		if fetchErr == nil || (bytes >= minPartialBandwidthBytes && elapsed >= minPartialBandwidthTime) {
+			if bytes <= 0 || elapsed <= 0 {
+				return 0, 0, "", fmt.Errorf("%s: invalid bandwidth sample", testURL)
+			}
+			return bytes, elapsed, testURL, nil
+		}
+		sourceErrs = append(sourceErrs, fmt.Errorf("%s: %w", testURL, fetchErr))
+	}
+	return 0, 0, "", errors.Join(sourceErrs...)
 }
 
 // SetOnProbeEvent sets the probe event callback. Must be called before Start.
