@@ -2,6 +2,7 @@ package routing
 
 import (
 	"errors"
+	"math"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -18,11 +19,19 @@ var randomRouteRNGPool = sync.Pool{
 	},
 }
 
-// randomRoute selects a routable node using P2C with latency/load scoring.
-// It intentionally trusts Platform.View as the routable source of truth and
-// does not do extra pool scans/availability validation on the hot path.
-// Post-pick race handling (node removed right after selection) is handled by
-// the caller in RouteRequest.
+const (
+	randomRouteMaxCandidates = 4
+	randomRouteFullScanLimit = 32
+	balancedLeasePenalty     = 0.15
+)
+
+// randomRoute selects a routable node using a small random candidate set with
+// latency/bandwidth/load scoring. Small platform views are fully scanned so
+// compact AI pools consistently pick the best measured node.
+// It intentionally trusts Platform.View as the routable source of truth. For
+// larger views it caps quality checks to a few random candidates; post-pick
+// race handling (node removed right after selection) is handled by the caller
+// in RouteRequest.
 func randomRoute(
 	plat *platform.Platform,
 	stats *IPLoadStats,
@@ -44,51 +53,63 @@ func randomRoute(
 		return view.RandomPick(rng)
 	}
 
-	// Pick 1st candidate.
-	h1, ok1 := pick()
-	if !ok1 {
+	first, ok := pick()
+	if !ok {
 		return node.Zero, ErrNoAvailableNodes
 	}
 
 	// If view has one node, use it directly.
 	if size == 1 {
-		return h1, nil
+		return first, nil
 	}
 
-	// Pick 2nd candidate; best-effort to make it distinct.
-	h2, ok2 := pick()
-	if !ok2 {
-		return h1, nil
-	}
-	if h2 == h1 {
-		for i := 0; i < 3; i++ {
-			candidate, ok := pick()
-			if !ok {
-				break
-			}
-			if candidate != h1 {
-				h2 = candidate
-				break
-			}
+	now := time.Now()
+	bestHash := first
+	bestScore := math.MaxFloat64
+	seen := map[node.Hash]struct{}{first: {}}
+	sampleLimit := min(size, randomRouteMaxCandidates)
+
+	scoreCandidate := func(h node.Hash) {
+		entry, ok := pool.GetEntry(h)
+		score := math.MaxFloat64
+		if ok {
+			cost := entryPerformanceCostMs(entry, targetDomain, authorities, now, p2cWindow)
+			score = calculateScore(entry, cost, plat, stats)
 		}
-		if h2 == h1 {
-			return h1, nil
+		// Favor the later candidate on exact ties to retain a little randomness
+		// when all quality/load inputs are equal.
+		if score <= bestScore {
+			bestHash = h
+			bestScore = score
 		}
 	}
+	scoreCandidate(first)
 
-	// Determine effective latency for comparison.
-	lat1, lat2 := compareLatencies(h1, h2, pool, targetDomain, authorities, p2cWindow)
-
-	// Calculate scores.
-	s1 := calculateScore(h1, lat1, plat, stats, pool)
-	s2 := calculateScore(h2, lat2, plat, stats, pool)
-
-	// Lower score is better.
-	selected := h2 // favor h2 on tie
-	if s1 < s2 {
-		selected = h1
+	if size <= randomRouteFullScanLimit {
+		view.Range(func(h node.Hash) bool {
+			if _, exists := seen[h]; exists {
+				return true
+			}
+			seen[h] = struct{}{}
+			scoreCandidate(h)
+			return true
+		})
+		return bestHash, nil
 	}
-	return selected, nil
+
+	for attempts := 0; len(seen) < sampleLimit && attempts < sampleLimit*4; attempts++ {
+		candidate, ok := pick()
+		if !ok {
+			break
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		scoreCandidate(candidate)
+	}
+
+	return bestHash, nil
 }
 
 // compareLatencies determines the latency values for h1 and h2.
@@ -110,7 +131,19 @@ func compareLatencies(
 	}
 
 	now := time.Now()
+	return compareEntryLatencies(e1, e2, target, authorities, now, window)
+}
 
+func compareEntryLatencies(
+	e1, e2 *node.NodeEntry,
+	target string,
+	authorities []string,
+	now time.Time,
+	window time.Duration,
+) (time.Duration, time.Duration) {
+	if e1 == nil || e2 == nil || e1.LatencyTable == nil || e2.LatencyTable == nil {
+		return 0, 0
+	}
 	// 1. Target domain check.
 	// target can be empty if extracted domain is invalid/empty, handle gracefully.
 	lat1, ok1 := lookupRecentDomainLatency(e1, target, now, window)
@@ -136,17 +169,11 @@ func isRecent(t time.Time, now time.Time, window time.Duration) bool {
 // calculateScore computes the score for a node based on platform allocation policy.
 // Lower is better.
 func calculateScore(
-	h node.Hash,
-	latency time.Duration,
+	entry *node.NodeEntry,
+	performanceCost float64,
 	plat *platform.Platform,
 	stats *IPLoadStats,
-	pool PoolAccessor,
 ) float64 {
-	entry, _ := pool.GetEntry(h)
-	// If entry is nil (race), treat as high load/latency?
-	// But we hold ref via pool, only deletion removes it.
-	// Assuming existence since we just picked it from view.
-
 	// Lease count from stats.
 	var leaseCount int64
 	if entry != nil {
@@ -156,21 +183,20 @@ func calculateScore(
 		}
 	}
 
-	// If latency is 0 (empty/incompatible), score = LeaseCount strictly.
-	if latency <= 0 {
+	// If no comparable performance data exists, score by lease count.
+	if performanceCost <= 0 {
 		return float64(leaseCount)
 	}
 
 	// Policy-based scoring.
 	switch plat.AllocationPolicy {
 	case platform.AllocationPolicyPreferLowLatency:
-		return float64(latency)
+		return performanceCost
 	case platform.AllocationPolicyPreferIdleIP:
 		return float64(leaseCount)
 	case platform.AllocationPolicyBalanced:
 		fallthrough
 	default:
-		// (LeaseCount + 1) * Latency
-		return float64(leaseCount+1) * float64(latency)
+		return performanceCost * (1 + float64(leaseCount)*balancedLeasePenalty)
 	}
 }

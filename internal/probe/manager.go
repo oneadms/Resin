@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
+	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/scanloop"
 	"github.com/Resinat/Resin/internal/topology"
 	"github.com/puzpuzpuz/xsync/v4"
@@ -19,6 +21,10 @@ import (
 // Fetcher executes an HTTP request through the given node, returning
 // response body and TLS handshake latency. This is injectable for testing.
 type Fetcher func(hash node.Hash, url string) (body []byte, latency time.Duration, err error)
+
+// BandwidthFetcher streams test data through the given node without retaining
+// the response body.
+type BandwidthFetcher func(hash node.Hash, url string, maxBytes int64) (bytes int64, elapsed time.Duration, err error)
 
 // ProbeConfig configures the ProbeManager.
 // Field names align 1:1 with RuntimeConfig to prevent mis-wiring.
@@ -31,6 +37,8 @@ type ProbeConfig struct {
 
 	// Fetcher executes HTTP via node hash. Injectable for testing.
 	Fetcher Fetcher
+	// BandwidthFetcher streams HTTP response data via node hash.
+	BandwidthFetcher BandwidthFetcher
 
 	// Interval thresholds — closures for hot-reload from RuntimeConfig.
 	MaxEgressTestInterval           func() time.Duration
@@ -53,14 +61,16 @@ type ProbeConfig struct {
 // ProbeManager schedules and executes active probes against nodes in the pool.
 // It holds a direct reference to *topology.GlobalNodePool (no interface).
 type ProbeManager struct {
-	pool        *topology.GlobalNodePool
-	stopCh      chan struct{}
-	stopOnce    sync.Once
-	wg          sync.WaitGroup
-	fetcher     Fetcher
-	workerCount int
-	taskQueue   *probeTaskQueue
-	taskStates  *xsync.Map[probeTaskKey, *probeTaskState]
+	pool             *topology.GlobalNodePool
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	wg               sync.WaitGroup
+	fetcher          Fetcher
+	bandwidthFetcher BandwidthFetcher
+	workerCount      int
+	taskQueue        *probeTaskQueue
+	taskStates       *xsync.Map[probeTaskKey, *probeTaskState]
+	bandwidthSlots   chan struct{}
 
 	maxEgressTestInterval           func() time.Duration
 	maxLatencyTestInterval          func() time.Duration
@@ -71,11 +81,21 @@ type ProbeManager struct {
 }
 
 const (
-	egressTraceURL        = "https://cloudflare.com/cdn-cgi/trace"
-	egressTraceDomain     = "cloudflare.com"
-	defaultLatencyTestURL = "https://www.gstatic.com/generate_204"
-	defaultQueueCap       = 1024
+	egressTraceURL                  = "https://cloudflare.com/cdn-cgi/trace"
+	egressTraceDomain               = "cloudflare.com"
+	defaultLatencyTestURL           = "https://www.gstatic.com/generate_204"
+	defaultBandwidthTestBytes int64 = 5_000_000
+	minPartialBandwidthBytes  int64 = 256_000
+	minPartialBandwidthTime         = 500 * time.Millisecond
+	bandwidthRefreshInterval        = 24 * time.Hour
+	bandwidthDiscoveryLimit         = 8
+	defaultQueueCap                 = 1024
 )
+
+var defaultBandwidthTestURLs = [...]string{
+	"https://speed.cloudflare.com/__down?bytes=5000000",
+	"https://proof.ovh.net/files/10Mb.dat",
+}
 
 type probePriority uint8
 
@@ -89,6 +109,7 @@ type probeTaskKind uint8
 const (
 	probeTaskKindEgress probeTaskKind = iota
 	probeTaskKindLatency
+	probeTaskKindBandwidth
 )
 
 type probeTaskKey struct {
@@ -261,9 +282,11 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		pool:                            cfg.Pool,
 		stopCh:                          make(chan struct{}),
 		fetcher:                         cfg.Fetcher,
+		bandwidthFetcher:                cfg.BandwidthFetcher,
 		workerCount:                     conc,
 		taskQueue:                       newProbeTaskQueue(queueCap, queueCap, cfg.ChooseNormalWhenBoth),
 		taskStates:                      xsync.NewMap[probeTaskKey, *probeTaskState](),
+		bandwidthSlots:                  make(chan struct{}, 2),
 		maxEgressTestInterval:           cfg.MaxEgressTestInterval,
 		maxLatencyTestInterval:          cfg.MaxLatencyTestInterval,
 		maxAuthorityLatencyTestInterval: cfg.MaxAuthorityLatencyTestInterval,
@@ -271,6 +294,69 @@ func NewProbeManager(cfg ProbeConfig) *ProbeManager {
 		latencyAuthorities:              cfg.LatencyAuthorities,
 		onProbeEvent:                    cfg.OnProbeEvent,
 	}
+}
+
+// BandwidthProbeResult holds the results of a synchronous download probe.
+type BandwidthProbeResult struct {
+	DownloadMbps float64 `json:"download_mbps"`
+	Bytes        int64   `json:"bytes"`
+	ElapsedMs    float64 `json:"elapsed_ms"`
+	SourceURL    string  `json:"source_url"`
+}
+
+// ProbeBandwidthSync performs a blocking download through a node.
+func (m *ProbeManager) ProbeBandwidthSync(hash node.Hash) (*BandwidthProbeResult, error) {
+	if m.bandwidthFetcher == nil {
+		return nil, fmt.Errorf("no bandwidth fetcher configured")
+	}
+	select {
+	case <-m.stopCh:
+		return nil, fmt.Errorf("probe manager stopped")
+	default:
+	}
+
+	entry, ok := m.pool.GetEntry(hash)
+	if !ok {
+		return nil, fmt.Errorf("node not found")
+	}
+	if entry.Outbound.Load() == nil {
+		return nil, fmt.Errorf("node outbound not ready")
+	}
+
+	var (
+		bytes      int64
+		elapsed    time.Duration
+		sourceURL  string
+		sourceErrs []error
+	)
+	for _, testURL := range defaultBandwidthTestURLs {
+		var fetchErr error
+		bytes, elapsed, fetchErr = m.bandwidthFetcher(hash, testURL, defaultBandwidthTestBytes)
+		if fetchErr == nil || (bytes >= minPartialBandwidthBytes && elapsed >= minPartialBandwidthTime) {
+			sourceURL = testURL
+			break
+		}
+		sourceErrs = append(sourceErrs, fmt.Errorf("%s: %w", testURL, fetchErr))
+	}
+	if sourceURL == "" {
+		m.pool.RecordBandwidth(hash, nil)
+		err := errors.Join(sourceErrs...)
+		log.Printf("[probe] bandwidth failed node=%s: %v", hash.Hex(), err)
+		return nil, fmt.Errorf("bandwidth probe failed: %w", err)
+	}
+	if bytes <= 0 || elapsed <= 0 {
+		m.pool.RecordBandwidth(hash, nil)
+		return nil, fmt.Errorf("bandwidth probe returned invalid sample")
+	}
+
+	mbps := float64(bytes*8) / elapsed.Seconds() / 1_000_000
+	m.pool.RecordBandwidth(hash, &mbps)
+	return &BandwidthProbeResult{
+		DownloadMbps: mbps,
+		Bytes:        bytes,
+		ElapsedMs:    float64(elapsed) / float64(time.Millisecond),
+		SourceURL:    sourceURL,
+	}, nil
 }
 
 // SetOnProbeEvent sets the probe event callback. Must be called before Start.
@@ -290,6 +376,12 @@ func (m *ProbeManager) Start() {
 	go func() {
 		defer m.wg.Done()
 		scanloop.Run(m.stopCh, scanloop.DefaultMinInterval, scanloop.DefaultJitterRange, m.scanLatency)
+	}()
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		scanloop.Run(m.stopCh, scanloop.DefaultMinInterval, scanloop.DefaultJitterRange, m.scanBandwidth)
 	}()
 
 	for i := 0; i < m.workerCount; i++ {
@@ -326,6 +418,11 @@ func (m *ProbeManager) TriggerImmediateEgressProbe(hash node.Hash) {
 // Caller returns immediately.
 func (m *ProbeManager) TriggerImmediateLatencyProbe(hash node.Hash) {
 	m.enqueueProbe(hash, probeTaskKindLatency, probePriorityNormal)
+}
+
+// TriggerImmediateBandwidthProbe enqueues an async bandwidth probe for a node.
+func (m *ProbeManager) TriggerImmediateBandwidthProbe(hash node.Hash) {
+	m.enqueueProbe(hash, probeTaskKindBandwidth, probePriorityNormal)
 }
 
 // EgressProbeResult holds the results of a synchronous egress probe.
@@ -516,6 +613,56 @@ func (m *ProbeManager) scanLatency() {
 	})
 }
 
+// scanBandwidth refreshes established bandwidth samples and slowly discovers
+// bandwidth for routable nodes that do not have a sample yet.
+func (m *ProbeManager) scanBandwidth() {
+	now := time.Now()
+	const lookahead = 15 * time.Second
+	discovered := 0
+
+	m.pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
+		select {
+		case <-m.stopCh:
+			return false
+		default:
+		}
+		if m.pool.IsNodeDisabled(h) || entry.Outbound.Load() == nil {
+			return true
+		}
+		lastAttempt := entry.LastBandwidthProbeAttempt.Load()
+		if lastAttempt <= 0 {
+			if discovered >= bandwidthDiscoveryLimit || !m.isRoutableByAnyPlatform(h) {
+				return true
+			}
+			if m.enqueueProbe(h, probeTaskKindBandwidth, probePriorityNormal) {
+				discovered++
+			}
+			return true
+		}
+		nextDue := time.Unix(0, lastAttempt).Add(bandwidthRefreshInterval).Add(-lookahead)
+		if now.Before(nextDue) {
+			return true
+		}
+		m.enqueueProbe(h, probeTaskKindBandwidth, probePriorityNormal)
+		return true
+	})
+}
+
+func (m *ProbeManager) isRoutableByAnyPlatform(hash node.Hash) bool {
+	if m == nil || m.pool == nil {
+		return false
+	}
+	routable := false
+	m.pool.RangePlatforms(func(plat *platform.Platform) bool {
+		if plat != nil && plat.View().Contains(hash) {
+			routable = true
+			return false
+		}
+		return true
+	})
+	return routable
+}
+
 func (m *ProbeManager) runProbeWorker() {
 	for {
 		task, ok := m.taskQueue.Dequeue()
@@ -547,6 +694,14 @@ func (m *ProbeManager) executeTask(task probeTask) {
 		m.probeEgress(task.key.hash, entry)
 	case probeTaskKindLatency:
 		m.probeLatency(task.key.hash, entry, m.currentLatencyTestURL())
+	case probeTaskKindBandwidth:
+		select {
+		case m.bandwidthSlots <- struct{}{}:
+			defer func() { <-m.bandwidthSlots }()
+		case <-m.stopCh:
+			return
+		}
+		_, _ = m.ProbeBandwidthSync(task.key.hash)
 	}
 }
 

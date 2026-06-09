@@ -109,6 +109,8 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "节点列表": "Node List",
   "连续失败": "Consecutive Failures",
   "参考延迟": "Reference Latency",
+  "下载带宽": "Download Bandwidth",
+  "带宽更新时间": "Bandwidth Updated",
   "上次探测": "Last Probe",
   "上次检查": "Last Check",
   "上次更新": "Last Updated",
@@ -668,6 +670,34 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "上传": "Upload",
   "下载": "Download",
   "延迟探测完成：延迟={{latency}}": "Latency probe complete: latency={{latency}}",
+  "带宽测试": "Bandwidth Test",
+  "触发带宽测试": "Run Bandwidth Test",
+  "自动移除带宽低于 (Mbps)": "Remove below (Mbps)",
+  "一键带宽测试并移除": "Test Bandwidth & Remove",
+  "延迟测试并移除": "Test Latency & Remove",
+  "一键质量筛选": "Run Quality Screening",
+  "失败也移除": "Remove failures",
+  "恢复禁用节点": "Recover disabled nodes",
+  "严格筛选会禁用无法完成延迟或带宽测试的节点":
+    "Strict screening disables nodes that cannot finish latency or bandwidth tests",
+  "测试手动禁用节点，并自动恢复通过质量阈值的节点":
+    "Test manually disabled nodes and automatically recover nodes that pass quality thresholds",
+  "同时测试延迟和带宽，并自动禁用任一指标不达标的节点":
+    "Test latency and bandwidth, then disable nodes that fail either threshold",
+  "质量筛选完成：完整测试 {{tested}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}":
+    "Quality screening complete: {{tested}} fully tested, {{disabled}} disabled, {{failedDisabled}} removed by failures, {{latencyFailed}} latency failures, {{bandwidthFailed}} bandwidth failures, {{skipped}} skipped",
+  "质量筛选完成：完整测试 {{tested}}，保留 {{kept}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟超标 {{latencyThreshold}}，带宽低标 {{bandwidthThreshold}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}":
+    "Quality screening complete: {{tested}} fully tested, {{kept}} kept, {{disabled}} disabled, {{failedDisabled}} removed by failures, {{latencyThreshold}} over latency threshold, {{bandwidthThreshold}} below bandwidth threshold, {{latencyFailed}} latency probe failures, {{bandwidthFailed}} bandwidth probe failures, {{skipped}} skipped",
+  "质量筛选完成：完整测试 {{tested}}，保留 {{kept}}，恢复 {{reenabled}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟超标 {{latencyThreshold}}，带宽低标 {{bandwidthThreshold}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}":
+    "Quality screening complete: {{tested}} fully tested, {{kept}} kept, {{reenabled}} recovered, {{disabled}} disabled, {{failedDisabled}} removed by failures, {{latencyThreshold}} over latency threshold, {{bandwidthThreshold}} below bandwidth threshold, {{latencyFailed}} latency probe failures, {{bandwidthFailed}} bandwidth probe failures, {{skipped}} skipped",
+  "下载固定测试数据，并自动禁用低于最低带宽的节点":
+    "Download fixed test data and disable nodes below the minimum bandwidth",
+  "通过节点下载固定大小的数据并计算实际速度。":
+    "Download fixed-size data through the node and calculate actual speed.",
+  "带宽测试完成：下载={{bandwidth}}，耗时={{elapsed}} ms":
+    "Bandwidth test complete: download={{bandwidth}}, elapsed={{elapsed}} ms",
+  "批量带宽测试完成：成功 {{tested}}，自动禁用 {{disabled}}，失败 {{failed}}，跳过 {{skipped}}":
+    "Batch bandwidth test complete: {{tested}} succeeded, {{disabled}} disabled, {{failed}} failed, {{skipped}} skipped",
   "样本": "Samples",
   "溢出": "Overflow",
   "预览订阅 {{name}} 的节点池": "Preview node pool for subscription {{name}}",

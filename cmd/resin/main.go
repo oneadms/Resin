@@ -45,6 +45,12 @@ type topologyRuntime struct {
 
 const downloadUserAgent = "clash.meta"
 
+const (
+	realTrafficBandwidthMinIngressBytes int64 = 1_000_000
+	realTrafficBandwidthMinDuration           = 500 * time.Millisecond
+	realTrafficBandwidthMaxMbps               = 10000.0
+)
+
 func main() {
 	if err := run(); err != nil {
 		fatalf("%v", err)
@@ -300,6 +306,26 @@ func newTopologyRuntime(
 				},
 			})
 		},
+		BandwidthFetcher: func(hash node.Hash, url string, maxBytes int64) (int64, time.Duration, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), envCfg.ProbeTimeout)
+			defer cancel()
+			entry, ok := pool.GetEntry(hash)
+			if !ok {
+				return 0, 0, fmt.Errorf("node not found")
+			}
+			outboundPtr := entry.Outbound.Load()
+			if outboundPtr == nil {
+				return 0, 0, outbound.ErrOutboundNotReady
+			}
+			return netutil.HTTPDownloadViaOutbound(ctx, *outboundPtr, url, maxBytes, netutil.OutboundHTTPOptions{
+				RequireStatusOK: true,
+				OnConnLifecycle: func(op netutil.ConnLifecycleOp) {
+					if onProbeConnLifecycle != nil {
+						onProbeConnLifecycle(op)
+					}
+				},
+			})
+		},
 		MaxEgressTestInterval: func() time.Duration {
 			return time.Duration(runtimeConfigSnapshot(runtimeCfg).MaxEgressTestInterval)
 		},
@@ -543,6 +569,9 @@ func newFlushReaders(
 				LastLatencyProbeAttemptNs:          entry.LastLatencyProbeAttempt.Load(),
 				LastAuthorityLatencyProbeAttemptNs: entry.LastAuthorityLatencyProbeAttempt.Load(),
 				LastEgressUpdateAttemptNs:          entry.LastEgressUpdateAttempt.Load(),
+				LastBandwidthProbeAttemptNs:        entry.LastBandwidthProbeAttempt.Load(),
+				LastBandwidthUpdateNs:              entry.LastBandwidthUpdate.Load(),
+				BandwidthMbps:                      entry.BandwidthMbps(),
 				ManualDisabled:                     entry.IsManuallyDisabled(),
 			}
 		},
@@ -731,14 +760,43 @@ func (a *runtimeStatsAdapter) CollectNodeEWMAs(platformID string) []float64 {
 type compositeEmitter struct {
 	logSvc     *requestlog.Service
 	metricsMgr *metrics.Manager
+	pool       *topology.GlobalNodePool
 }
 
 func (c compositeEmitter) EmitRequestFinished(ev proxy.RequestFinishedEvent) {
-	c.metricsMgr.OnRequestFinished(ev)
+	if c.metricsMgr != nil {
+		c.metricsMgr.OnRequestFinished(ev)
+	}
+	recordBandwidthFromFinishedEvent(c.pool, ev)
 }
 
 func (c compositeEmitter) EmitRequestLog(ev proxy.RequestLogEntry) {
-	c.logSvc.EmitRequestLog(ev)
+	if c.logSvc != nil {
+		c.logSvc.EmitRequestLog(ev)
+	}
+}
+
+func recordBandwidthFromFinishedEvent(pool *topology.GlobalNodePool, ev proxy.RequestFinishedEvent) bool {
+	if pool == nil || !ev.NetOK || ev.IsConnect {
+		return false
+	}
+	if ev.NodeHash == "" || ev.IngressBytes < realTrafficBandwidthMinIngressBytes {
+		return false
+	}
+	if ev.DurationNs < int64(realTrafficBandwidthMinDuration) {
+		return false
+	}
+	hash, err := node.ParseHex(ev.NodeHash)
+	if err != nil || hash.IsZero() {
+		return false
+	}
+
+	mbps := float64(ev.IngressBytes) * 8 * float64(time.Second) / float64(ev.DurationNs) / 1_000_000
+	if mbps <= 0 || mbps > realTrafficBandwidthMaxMbps {
+		return false
+	}
+	pool.RecordBandwidth(hash, &mbps)
+	return true
 }
 
 func loadBootstrapNodeStatics(
@@ -874,6 +932,9 @@ func restoreBootstrapNodeDynamics(
 		entry.LastLatencyProbeAttempt.Store(nd.LastLatencyProbeAttemptNs)
 		entry.LastAuthorityLatencyProbeAttempt.Store(nd.LastAuthorityLatencyProbeAttemptNs)
 		entry.LastEgressUpdateAttempt.Store(nd.LastEgressUpdateAttemptNs)
+		entry.LastBandwidthProbeAttempt.Store(nd.LastBandwidthProbeAttemptNs)
+		entry.LastBandwidthUpdate.Store(nd.LastBandwidthUpdateNs)
+		entry.StoreBandwidthMbps(nd.BandwidthMbps)
 		entry.SetManualDisabled(nd.ManualDisabled)
 		if nd.EgressIP != "" {
 			if ip, err := netip.ParseAddr(nd.EgressIP); err == nil {

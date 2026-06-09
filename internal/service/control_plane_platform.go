@@ -605,6 +605,9 @@ type NodeSummary struct {
 	LastLatencyProbeAttempt          string    `json:"last_latency_probe_attempt,omitempty"`
 	LastAuthorityLatencyProbeAttempt string    `json:"last_authority_latency_probe_attempt,omitempty"`
 	ReferenceLatencyMs               *float64  `json:"reference_latency_ms,omitempty"`
+	DownloadBandwidthMbps            *float64  `json:"download_bandwidth_mbps,omitempty"`
+	LastBandwidthProbeAttempt        string    `json:"last_bandwidth_probe_attempt,omitempty"`
+	LastBandwidthUpdate              string    `json:"last_bandwidth_update,omitempty"`
 	LastEgressUpdateAttempt          string    `json:"last_egress_update_attempt,omitempty"`
 	Tags                             []NodeTag `json:"tags"`
 }
@@ -660,6 +663,15 @@ func (s *ControlPlaneService) nodeEntryToSummary(h node.Hash, entry *node.NodeEn
 	}
 	if lastAuthority := entry.LastAuthorityLatencyProbeAttempt.Load(); lastAuthority > 0 {
 		ns.LastAuthorityLatencyProbeAttempt = time.Unix(0, lastAuthority).UTC().Format(time.RFC3339Nano)
+	}
+	if bandwidth := entry.BandwidthMbps(); bandwidth > 0 {
+		ns.DownloadBandwidthMbps = &bandwidth
+	}
+	if lastAttempt := entry.LastBandwidthProbeAttempt.Load(); lastAttempt > 0 {
+		ns.LastBandwidthProbeAttempt = time.Unix(0, lastAttempt).UTC().Format(time.RFC3339Nano)
+	}
+	if lastUpdate := entry.LastBandwidthUpdate.Load(); lastUpdate > 0 {
+		ns.LastBandwidthUpdate = time.Unix(0, lastUpdate).UTC().Format(time.RFC3339Nano)
 	}
 	if s != nil && s.RuntimeCfg != nil {
 		if cfg := s.RuntimeCfg.Load(); cfg != nil {

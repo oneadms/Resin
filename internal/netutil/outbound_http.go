@@ -109,6 +109,72 @@ func HTTPGetViaOutbound(
 	return body, latency, nil
 }
 
+// HTTPDownloadViaOutbound streams up to maxBytes through the provided outbound
+// and returns the downloaded byte count and response-body transfer duration.
+func HTTPDownloadViaOutbound(
+	ctx context.Context,
+	outbound adapter.Outbound,
+	url string,
+	maxBytes int64,
+	opts OutboundHTTPOptions,
+) (int64, time.Duration, error) {
+	if outbound == nil {
+		return 0, 0, fmt.Errorf("outbound download: outbound is nil")
+	}
+	if maxBytes <= 0 {
+		return 0, 0, fmt.Errorf("outbound download: maxBytes must be positive")
+	}
+
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := outbound.DialContext(ctx, network, M.ParseSocksaddr(addr))
+			if err != nil {
+				return nil, err
+			}
+			if opts.OnConnLifecycle != nil {
+				opts.OnConnLifecycle(ConnLifecycleOpen)
+				return &connCloseHook{Conn: conn, onClose: func() { opts.OnConnLifecycle(ConnLifecycleClose) }}, nil
+			}
+			return conn, nil
+		},
+		DisableKeepAlives: true,
+		ForceAttemptHTTP2: true,
+	}
+	client := &http.Client{Transport: transport}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	userAgent := opts.UserAgent
+	if userAgent == "" {
+		userAgent = defaultOutboundUserAgent
+	}
+	req.Header.Set("User-Agent", userAgent)
+
+	requestStart := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, time.Since(requestStart), err
+	}
+	defer resp.Body.Close()
+
+	if opts.RequireStatusOK && resp.StatusCode != http.StatusOK {
+		return 0, time.Since(requestStart), fmt.Errorf("outbound download: unexpected status %d from %s", resp.StatusCode, url)
+	}
+
+	transferStart := time.Now()
+	downloaded, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxBytes))
+	elapsed := time.Since(transferStart)
+	if err != nil {
+		return downloaded, elapsed, err
+	}
+	if downloaded == 0 {
+		return 0, elapsed, fmt.Errorf("outbound download: empty response from %s", url)
+	}
+	return downloaded, elapsed, nil
+}
+
 // connCloseHook wraps a net.Conn and calls onClose exactly once on Close.
 type connCloseHook struct {
 	net.Conn

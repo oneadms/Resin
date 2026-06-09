@@ -185,6 +185,17 @@ type batchProbeLatencyRequest struct {
 	MaxLatencyMs float64 `json:"max_latency_ms"`
 }
 
+type batchProbeBandwidthRequest struct {
+	MinDownloadMbps float64 `json:"min_download_mbps"`
+}
+
+type batchProbeQualityRequest struct {
+	MaxLatencyMs    float64 `json:"max_latency_ms"`
+	MinDownloadMbps float64 `json:"min_download_mbps"`
+	DisableFailed   bool    `json:"disable_failed"`
+	RecoverDisabled bool    `json:"recover_disabled"`
+}
+
 // HandleBatchProbeLatency returns a handler for POST /api/v1/nodes/actions/probe-latency.
 func HandleBatchProbeLatency(cp *service.ControlPlaneService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +209,48 @@ func HandleBatchProbeLatency(cp *service.ControlPlaneService) http.HandlerFunc {
 			return
 		}
 		result, err := cp.ProbeLatencyBatch(filters, req.MaxLatencyMs)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+	}
+}
+
+// HandleBatchProbeBandwidth returns a handler for POST /api/v1/nodes/actions/probe-bandwidth.
+func HandleBatchProbeBandwidth(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		filters, ok := parseNodeFiltersOrWriteInvalid(w, r)
+		if !ok {
+			return
+		}
+		var req batchProbeBandwidthRequest
+		if err := DecodeBody(r, &req); err != nil {
+			writeDecodeBodyError(w, err)
+			return
+		}
+		result, err := cp.ProbeBandwidthBatch(filters, req.MinDownloadMbps)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+	}
+}
+
+// HandleBatchProbeQuality returns a handler for POST /api/v1/nodes/actions/probe-quality.
+func HandleBatchProbeQuality(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		filters, ok := parseNodeFiltersOrWriteInvalid(w, r)
+		if !ok {
+			return
+		}
+		var req batchProbeQualityRequest
+		if err := DecodeBody(r, &req); err != nil {
+			writeDecodeBodyError(w, err)
+			return
+		}
+		result, err := cp.ProbeQualityBatch(filters, req.MaxLatencyMs, req.MinDownloadMbps, req.DisableFailed, req.RecoverDisabled)
 		if err != nil {
 			writeServiceError(w, err)
 			return
@@ -254,6 +307,19 @@ func HandleProbeLatency(cp *service.ControlPlaneService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		hash := PathParam(r, "hash")
 		result, err := cp.ProbeLatency(hash)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, result)
+	}
+}
+
+// HandleProbeBandwidth returns a handler for POST /api/v1/nodes/{hash}/actions/probe-bandwidth.
+func HandleProbeBandwidth(cp *service.ControlPlaneService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		hash := PathParam(r, "hash")
+		result, err := cp.ProbeBandwidth(hash)
 		if err != nil {
 			writeServiceError(w, err)
 			return

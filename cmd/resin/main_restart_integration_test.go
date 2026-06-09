@@ -46,6 +46,8 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	egressAttemptAt := egressUpdatedAt - int64(5*time.Second)
 	latencyAttemptAt := egressUpdatedAt - int64(3*time.Second)
 	authorityAttemptAt := egressUpdatedAt - int64(2*time.Second)
+	bandwidthAttemptAt := egressUpdatedAt - int64(time.Second)
+	bandwidthUpdateAt := egressUpdatedAt
 
 	engine1, closer1, err := state.PersistenceBootstrap(stateDir, cacheDir)
 	if err != nil {
@@ -110,6 +112,9 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	entry1.LastEgressUpdateAttempt.Store(egressAttemptAt)
 	entry1.LastLatencyProbeAttempt.Store(latencyAttemptAt)
 	entry1.LastAuthorityLatencyProbeAttempt.Store(authorityAttemptAt)
+	entry1.LastBandwidthProbeAttempt.Store(bandwidthAttemptAt)
+	entry1.LastBandwidthUpdate.Store(bandwidthUpdateAt)
+	entry1.StoreBandwidthMbps(88.5)
 	entry1.FailureCount.Store(2)
 	if entry1.LatencyTable == nil {
 		t.Fatal("node latency table should be initialized")
@@ -246,6 +251,15 @@ func TestBootstrapRestart_RecoversTopologyAndStickyLease(t *testing.T) {
 	}
 	if got := entry2.LastAuthorityLatencyProbeAttempt.Load(); got != authorityAttemptAt {
 		t.Fatalf("last_authority_latency_probe_attempt_ns: got %d, want %d", got, authorityAttemptAt)
+	}
+	if got := entry2.LastBandwidthProbeAttempt.Load(); got != bandwidthAttemptAt {
+		t.Fatalf("last_bandwidth_probe_attempt_ns: got %d, want %d", got, bandwidthAttemptAt)
+	}
+	if got := entry2.LastBandwidthUpdate.Load(); got != bandwidthUpdateAt {
+		t.Fatalf("last_bandwidth_update_ns: got %d, want %d", got, bandwidthUpdateAt)
+	}
+	if got := entry2.BandwidthMbps(); got != 88.5 {
+		t.Fatalf("bandwidth_mbps: got %v, want 88.5", got)
 	}
 	if entry2.LatencyTable == nil {
 		t.Fatal("latency table should be restored")

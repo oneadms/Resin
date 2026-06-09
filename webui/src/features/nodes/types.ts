@@ -16,10 +16,13 @@ export type NodeSummary = {
   failure_count: number;
   egress_ip?: string;
   reference_latency_ms?: number;
+  download_bandwidth_mbps?: number;
   region?: string;
   last_egress_update?: string;
   last_latency_probe_attempt?: string;
   last_authority_latency_probe_attempt?: string;
+  last_bandwidth_probe_attempt?: string;
+  last_bandwidth_update?: string;
   last_egress_update_attempt?: string;
   tags: NodeTag[];
 };
@@ -72,4 +75,45 @@ export type BatchLatencyProbeResult = {
   disabled_count: number;
   failed_count: number;
   skipped_count: number;
+};
+
+export type BandwidthProbeResult = {
+  download_mbps: number;
+  bytes: number;
+  elapsed_ms: number;
+  source_url: string;
+};
+
+export type BatchBandwidthProbeResult = {
+  matched_count: number;
+  tested_count: number;
+  disabled_count: number;
+  failed_count: number;
+  skipped_count: number;
+};
+
+export type BatchQualityProbeResult = {
+  matched_count: number;
+  tested_count: number;
+  kept_count: number;
+  reenabled_count: number;
+  disabled_count: number;
+  failed_disabled_count: number;
+  latency_failed_count: number;
+  latency_threshold_failed_count: number;
+  bandwidth_failed_count: number;
+  bandwidth_threshold_failed_count: number;
+  skipped_count: number;
+  failure_samples?: QualityProbeNodeFailure[];
+};
+
+export type QualityProbeNodeFailure = {
+  node_hash: string;
+  display_tag?: string;
+  reasons: string[];
+  disabled: boolean;
+  latency_ms?: number;
+  download_mbps?: number;
+  latency_error?: string;
+  bandwidth_error?: string;
 };

@@ -33,11 +33,14 @@ type ConnectionLifecycleEvent struct {
 // RequestFinishedEvent is emitted when a proxy request completes.
 // Used by the metrics subsystem (Phase 8).
 type RequestFinishedEvent struct {
-	PlatformID string
-	ProxyType  ProxyType // 1=http forward, 2=reverse, 3=socks5 forward
-	IsConnect  bool
-	NetOK      bool
-	DurationNs int64
+	PlatformID   string
+	ProxyType    ProxyType // 1=http forward, 2=reverse, 3=socks5 forward
+	IsConnect    bool
+	NetOK        bool
+	DurationNs   int64
+	NodeHash     string
+	IngressBytes int64 // bytes from upstream to client (header + body)
+	EgressBytes  int64 // bytes from client to upstream (header + body)
 }
 
 // RequestLogEntry captures per-request details for the structured request log.

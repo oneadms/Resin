@@ -296,6 +296,22 @@ func (s *ControlPlaneService) ProbeLatency(hashStr string) (*probe.LatencyProbeR
 	return result, nil
 }
 
+// ProbeBandwidth triggers a synchronous download bandwidth probe.
+func (s *ControlPlaneService) ProbeBandwidth(hashStr string) (*probe.BandwidthProbeResult, error) {
+	h, err := node.ParseHex(hashStr)
+	if err != nil {
+		return nil, invalidArg("node_hash: invalid format")
+	}
+	if _, ok := s.Pool.GetEntry(h); !ok {
+		return nil, notFound("node not found")
+	}
+	result, err := s.ProbeMgr.ProbeBandwidthSync(h)
+	if err != nil {
+		return nil, internal("bandwidth probe failed", err)
+	}
+	return result, nil
+}
+
 // BatchLatencyProbeResult summarizes a bulk real-connection latency probe.
 type BatchLatencyProbeResult struct {
 	MatchedCount  int `json:"matched_count"`
@@ -365,6 +381,276 @@ func (s *ControlPlaneService) ProbeLatencyBatch(filters NodeFilters, maxLatencyM
 	result.TestedCount = int(tested.Load())
 	result.DisabledCount = int(disabled.Load())
 	result.FailedCount = int(failed.Load())
+	result.SkippedCount = int(skipped.Load())
+	return result, nil
+}
+
+// BatchBandwidthProbeResult summarizes a bulk download bandwidth probe.
+type BatchBandwidthProbeResult struct {
+	MatchedCount  int `json:"matched_count"`
+	TestedCount   int `json:"tested_count"`
+	DisabledCount int `json:"disabled_count"`
+	FailedCount   int `json:"failed_count"`
+	SkippedCount  int `json:"skipped_count"`
+}
+
+// BatchQualityProbeResult summarizes combined latency and bandwidth screening.
+type BatchQualityProbeResult struct {
+	MatchedCount                  int                       `json:"matched_count"`
+	TestedCount                   int                       `json:"tested_count"`
+	KeptCount                     int                       `json:"kept_count"`
+	ReenabledCount                int                       `json:"reenabled_count"`
+	DisabledCount                 int                       `json:"disabled_count"`
+	FailedDisabledCount           int                       `json:"failed_disabled_count"`
+	LatencyFailedCount            int                       `json:"latency_failed_count"`
+	LatencyThresholdFailedCount   int                       `json:"latency_threshold_failed_count"`
+	BandwidthFailedCount          int                       `json:"bandwidth_failed_count"`
+	BandwidthThresholdFailedCount int                       `json:"bandwidth_threshold_failed_count"`
+	SkippedCount                  int                       `json:"skipped_count"`
+	FailureSamples                []QualityProbeNodeFailure `json:"failure_samples,omitempty"`
+}
+
+// QualityProbeNodeFailure captures a bounded diagnostic sample for nodes that
+// could not prove they are good enough for large AI responses.
+type QualityProbeNodeFailure struct {
+	NodeHash       string   `json:"node_hash"`
+	DisplayTag     string   `json:"display_tag,omitempty"`
+	Reasons        []string `json:"reasons"`
+	Disabled       bool     `json:"disabled"`
+	LatencyMs      *float64 `json:"latency_ms,omitempty"`
+	DownloadMbps   *float64 `json:"download_mbps,omitempty"`
+	LatencyError   string   `json:"latency_error,omitempty"`
+	BandwidthError string   `json:"bandwidth_error,omitempty"`
+}
+
+// ProbeBandwidthBatch probes all enabled nodes matching filters and manually
+// disables nodes whose measured download speed is below minDownloadMbps.
+func (s *ControlPlaneService) ProbeBandwidthBatch(filters NodeFilters, minDownloadMbps float64) (*BatchBandwidthProbeResult, error) {
+	if minDownloadMbps <= 0 || math.IsNaN(minDownloadMbps) || math.IsInf(minDownloadMbps, 0) {
+		return nil, invalidArg("min_download_mbps: must be a positive finite number")
+	}
+	if s == nil || s.ProbeMgr == nil {
+		return nil, internal("bandwidth probe manager is unavailable", nil)
+	}
+
+	nodes, err := s.ListNodes(filters)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &BatchBandwidthProbeResult{MatchedCount: len(nodes)}
+	const concurrency = 4
+	tasks := make(chan NodeSummary)
+	var tested atomic.Int64
+	var disabled atomic.Int64
+	var failed atomic.Int64
+	var skipped atomic.Int64
+	var wg sync.WaitGroup
+
+	worker := func() {
+		defer wg.Done()
+		for summary := range tasks {
+			if !summary.Enabled {
+				skipped.Add(1)
+				continue
+			}
+			probeResult, probeErr := s.ProbeBandwidth(summary.NodeHash)
+			if probeErr != nil {
+				failed.Add(1)
+				continue
+			}
+			tested.Add(1)
+			if probeResult.DownloadMbps < minDownloadMbps {
+				h, parseErr := node.ParseHex(summary.NodeHash)
+				if parseErr == nil && s.Pool.SetNodeManualDisabled(h, true) {
+					disabled.Add(1)
+				}
+			}
+		}
+	}
+
+	workerCount := min(concurrency, len(nodes))
+	for range workerCount {
+		wg.Add(1)
+		go worker()
+	}
+	for _, summary := range nodes {
+		tasks <- summary
+	}
+	close(tasks)
+	wg.Wait()
+
+	result.TestedCount = int(tested.Load())
+	result.DisabledCount = int(disabled.Load())
+	result.FailedCount = int(failed.Load())
+	result.SkippedCount = int(skipped.Load())
+	return result, nil
+}
+
+// ProbeQualityBatch measures both latency and download bandwidth, then disables
+// nodes that fail either successfully measured threshold.
+func (s *ControlPlaneService) ProbeQualityBatch(
+	filters NodeFilters,
+	maxLatencyMs float64,
+	minDownloadMbps float64,
+	disableFailed bool,
+	recoverDisabled bool,
+) (*BatchQualityProbeResult, error) {
+	if maxLatencyMs <= 0 || math.IsNaN(maxLatencyMs) || math.IsInf(maxLatencyMs, 0) {
+		return nil, invalidArg("max_latency_ms: must be a positive finite number")
+	}
+	if minDownloadMbps <= 0 || math.IsNaN(minDownloadMbps) || math.IsInf(minDownloadMbps, 0) {
+		return nil, invalidArg("min_download_mbps: must be a positive finite number")
+	}
+	if s == nil || s.ProbeMgr == nil {
+		return nil, internal("probe manager is unavailable", nil)
+	}
+
+	nodes, err := s.ListNodes(filters)
+	if err != nil {
+		return nil, err
+	}
+
+	result := &BatchQualityProbeResult{MatchedCount: len(nodes)}
+	const concurrency = 4
+	const maxFailureSamples = 10
+	tasks := make(chan NodeSummary)
+	var tested atomic.Int64
+	var kept atomic.Int64
+	var reenabled atomic.Int64
+	var disabled atomic.Int64
+	var failedDisabled atomic.Int64
+	var latencyFailed atomic.Int64
+	var latencyThresholdFailed atomic.Int64
+	var bandwidthFailed atomic.Int64
+	var bandwidthThresholdFailed atomic.Int64
+	var sampleMu sync.Mutex
+	var skipped atomic.Int64
+	var wg sync.WaitGroup
+
+	recordFailureSample := func(summary NodeSummary, reasons []string, disabled bool, latencyMs *float64, downloadMbps *float64, latencyErr error, bandwidthErr error) {
+		if len(reasons) == 0 {
+			return
+		}
+		sampleMu.Lock()
+		defer sampleMu.Unlock()
+		if len(result.FailureSamples) >= maxFailureSamples {
+			return
+		}
+		displayTag := summary.DisplayTag
+		if displayTag == "" && len(summary.Tags) > 0 {
+			displayTag = summary.Tags[0].Tag
+		}
+		sample := QualityProbeNodeFailure{
+			NodeHash:     summary.NodeHash,
+			DisplayTag:   displayTag,
+			Reasons:      append([]string(nil), reasons...),
+			Disabled:     disabled,
+			LatencyMs:    latencyMs,
+			DownloadMbps: downloadMbps,
+		}
+		if latencyErr != nil {
+			sample.LatencyError = latencyErr.Error()
+		}
+		if bandwidthErr != nil {
+			sample.BandwidthError = bandwidthErr.Error()
+		}
+		result.FailureSamples = append(result.FailureSamples, sample)
+	}
+
+	worker := func() {
+		defer wg.Done()
+		for summary := range tasks {
+			if !summary.Enabled && !(recoverDisabled && summary.ManualDisabled) {
+				skipped.Add(1)
+				continue
+			}
+
+			latencyResult, latencyErr := s.ProbeLatency(summary.NodeHash)
+			if latencyErr != nil {
+				latencyFailed.Add(1)
+			}
+			bandwidthResult, bandwidthErr := s.ProbeBandwidth(summary.NodeHash)
+			if bandwidthErr != nil {
+				bandwidthFailed.Add(1)
+			}
+			if latencyErr == nil && bandwidthErr == nil {
+				tested.Add(1)
+			}
+
+			var reasons []string
+			var latencyMs *float64
+			var downloadMbps *float64
+			shouldDisable := false
+			if latencyErr != nil {
+				reasons = append(reasons, "latency_probe_failed")
+			} else {
+				latencyValue := latencyResult.LatencyMs
+				latencyMs = &latencyValue
+				if latencyResult.LatencyMs > maxLatencyMs {
+					latencyThresholdFailed.Add(1)
+					reasons = append(reasons, "latency_above_threshold")
+					shouldDisable = true
+				}
+			}
+			if bandwidthErr != nil {
+				reasons = append(reasons, "bandwidth_probe_failed")
+			} else {
+				bandwidthValue := bandwidthResult.DownloadMbps
+				downloadMbps = &bandwidthValue
+				if bandwidthResult.DownloadMbps < minDownloadMbps {
+					bandwidthThresholdFailed.Add(1)
+					reasons = append(reasons, "bandwidth_below_threshold")
+					shouldDisable = true
+				}
+			}
+			disabledByFailure := disableFailed && (latencyErr != nil || bandwidthErr != nil)
+			shouldDisable = shouldDisable || disabledByFailure
+			disabledNow := false
+			reenabledNow := false
+			if shouldDisable {
+				h, parseErr := node.ParseHex(summary.NodeHash)
+				if parseErr == nil && s.Pool.SetNodeManualDisabled(h, true) {
+					disabled.Add(1)
+					disabledNow = true
+					if disabledByFailure {
+						failedDisabled.Add(1)
+					}
+				}
+			} else {
+				if recoverDisabled && summary.ManualDisabled {
+					h, parseErr := node.ParseHex(summary.NodeHash)
+					if parseErr == nil && s.Pool.SetNodeManualDisabled(h, false) {
+						reenabled.Add(1)
+						reenabledNow = true
+					}
+				}
+				kept.Add(1)
+			}
+			recordFailureSample(summary, reasons, disabledNow || (summary.ManualDisabled && !reenabledNow), latencyMs, downloadMbps, latencyErr, bandwidthErr)
+		}
+	}
+
+	workerCount := min(concurrency, len(nodes))
+	for range workerCount {
+		wg.Add(1)
+		go worker()
+	}
+	for _, summary := range nodes {
+		tasks <- summary
+	}
+	close(tasks)
+	wg.Wait()
+
+	result.TestedCount = int(tested.Load())
+	result.KeptCount = int(kept.Load())
+	result.ReenabledCount = int(reenabled.Load())
+	result.DisabledCount = int(disabled.Load())
+	result.FailedDisabledCount = int(failedDisabled.Load())
+	result.LatencyFailedCount = int(latencyFailed.Load())
+	result.LatencyThresholdFailedCount = int(latencyThresholdFailed.Load())
+	result.BandwidthFailedCount = int(bandwidthFailed.Load())
+	result.BandwidthThresholdFailedCount = int(bandwidthThresholdFailed.Load())
 	result.SkippedCount = int(skipped.Load())
 	return result, nil
 }

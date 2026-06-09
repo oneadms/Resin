@@ -1,6 +1,7 @@
 package probe
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Resinat/Resin/internal/node"
+	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/subscription"
 	"github.com/Resinat/Resin/internal/testutil"
 	"github.com/Resinat/Resin/internal/topology"
@@ -208,6 +210,210 @@ func TestProbeLatency_Failure(t *testing.T) {
 	if entry.FailureCount.Load() != 1 {
 		t.Fatalf("expected 1 failure, got %d", entry.FailureCount.Load())
 	}
+}
+
+func TestProbeBandwidthSync_CalculatesMbps(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+	hash := node.HashFromRawOptions([]byte(`{"type":"bandwidth-ok"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"bandwidth-ok"}`), "sub1")
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		BandwidthFetcher: func(gotHash node.Hash, url string, maxBytes int64) (int64, time.Duration, error) {
+			if gotHash != hash {
+				t.Fatalf("hash = %s, want %s", gotHash.Hex(), hash.Hex())
+			}
+			if url != defaultBandwidthTestURLs[0] {
+				t.Fatalf("url = %q, want %q", url, defaultBandwidthTestURLs[0])
+			}
+			if maxBytes != defaultBandwidthTestBytes {
+				t.Fatalf("maxBytes = %d, want %d", maxBytes, defaultBandwidthTestBytes)
+			}
+			return 5_000_000, 2 * time.Second, nil
+		},
+	})
+
+	result, err := mgr.ProbeBandwidthSync(hash)
+	if err != nil {
+		t.Fatalf("ProbeBandwidthSync: %v", err)
+	}
+	if result.DownloadMbps != 20 {
+		t.Fatalf("DownloadMbps = %v, want 20", result.DownloadMbps)
+	}
+	if result.Bytes != 5_000_000 || result.ElapsedMs != 2000 {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.SourceURL != defaultBandwidthTestURLs[0] {
+		t.Fatalf("SourceURL = %q, want %q", result.SourceURL, defaultBandwidthTestURLs[0])
+	}
+	if got := entry.BandwidthMbps(); got != 20 {
+		t.Fatalf("stored bandwidth = %v, want 20", got)
+	}
+	if entry.LastBandwidthProbeAttempt.Load() <= 0 || entry.LastBandwidthUpdate.Load() <= 0 {
+		t.Fatal("bandwidth probe timestamps were not recorded")
+	}
+}
+
+func TestProbeBandwidthSync_FallsBackToSecondarySource(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+	hash := node.HashFromRawOptions([]byte(`{"type":"bandwidth-fallback"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"bandwidth-fallback"}`), "sub1")
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	var calls int
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		BandwidthFetcher: func(_ node.Hash, url string, _ int64) (int64, time.Duration, error) {
+			calls++
+			if url == defaultBandwidthTestURLs[0] {
+				return 0, 0, errors.New("primary unavailable")
+			}
+			if url != defaultBandwidthTestURLs[1] {
+				t.Fatalf("unexpected fallback URL %q", url)
+			}
+			return 5_000_000, 4 * time.Second, nil
+		},
+	})
+
+	result, err := mgr.ProbeBandwidthSync(hash)
+	if err != nil {
+		t.Fatalf("ProbeBandwidthSync: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if result.DownloadMbps != 10 || result.SourceURL != defaultBandwidthTestURLs[1] {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestProbeBandwidthSync_UsesLargePartialSampleOnTimeout(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+	hash := node.HashFromRawOptions([]byte(`{"type":"bandwidth-partial"}`))
+	pool.AddNodeFromSub(hash, []byte(`{"type":"bandwidth-partial"}`), "sub1")
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatal("entry not found")
+	}
+	storeOutbound(entry)
+
+	mgr := NewProbeManager(ProbeConfig{
+		Pool: pool,
+		BandwidthFetcher: func(node.Hash, string, int64) (int64, time.Duration, error) {
+			return 1_000_000, 4 * time.Second, context.DeadlineExceeded
+		},
+	})
+
+	result, err := mgr.ProbeBandwidthSync(hash)
+	if err != nil {
+		t.Fatalf("ProbeBandwidthSync: %v", err)
+	}
+	if result.DownloadMbps != 2 {
+		t.Fatalf("DownloadMbps = %v, want 2", result.DownloadMbps)
+	}
+}
+
+func TestScanBandwidth_DiscoversOnlyRoutableUnknownBandwidth(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+	plat := platform.NewPlatform("plat-bandwidth-discovery", "BandwidthDiscovery", nil, nil)
+	pool.RegisterPlatform(plat)
+
+	routableHash := addBandwidthScanNode(t, pool, `{"type":"bandwidth-discover-routable"}`, "198.51.100.10", true)
+	_ = addBandwidthScanNode(t, pool, `{"type":"bandwidth-discover-unroutable"}`, "", true)
+	freshHash := addBandwidthScanNode(t, pool, `{"type":"bandwidth-discover-fresh"}`, "198.51.100.11", true)
+	freshEntry, ok := pool.GetEntry(freshHash)
+	if !ok {
+		t.Fatal("fresh entry not found")
+	}
+	freshEntry.LastBandwidthProbeAttempt.Store(time.Now().UnixNano())
+
+	pool.RebuildPlatform(plat)
+	mgr := NewProbeManager(ProbeConfig{Pool: pool})
+	mgr.scanBandwidth()
+
+	tasks := queuedNormalProbeTasks(mgr)
+	if len(tasks) != 1 {
+		t.Fatalf("queued bandwidth tasks = %d, want 1", len(tasks))
+	}
+	if tasks[0].key.hash != routableHash || tasks[0].key.kind != probeTaskKindBandwidth {
+		t.Fatalf("unexpected queued task: %+v, want bandwidth for %s", tasks[0].key, routableHash.Hex())
+	}
+}
+
+func TestScanBandwidth_CapsUnknownBandwidthDiscovery(t *testing.T) {
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+	})
+	plat := platform.NewPlatform("plat-bandwidth-discovery-cap", "BandwidthDiscoveryCap", nil, nil)
+	pool.RegisterPlatform(plat)
+
+	for i := 0; i < bandwidthDiscoveryLimit+3; i++ {
+		raw := `{"type":"bandwidth-discover-cap","n":"` + string(rune('a'+i)) + `"}`
+		addBandwidthScanNode(t, pool, raw, "198.51.100.20", true)
+	}
+	pool.RebuildPlatform(plat)
+
+	mgr := NewProbeManager(ProbeConfig{Pool: pool})
+	mgr.scanBandwidth()
+
+	tasks := queuedNormalProbeTasks(mgr)
+	if len(tasks) != bandwidthDiscoveryLimit {
+		t.Fatalf("queued bandwidth discovery tasks = %d, want %d", len(tasks), bandwidthDiscoveryLimit)
+	}
+	for _, task := range tasks {
+		if task.key.kind != probeTaskKindBandwidth {
+			t.Fatalf("queued non-bandwidth task: %+v", task.key)
+		}
+	}
+}
+
+func addBandwidthScanNode(t *testing.T, pool *topology.GlobalNodePool, raw string, egressIP string, withOutbound bool) node.Hash {
+	t.Helper()
+	hash := node.HashFromRawOptions([]byte(raw))
+	pool.AddNodeFromSub(hash, []byte(raw), "sub1")
+	entry, ok := pool.GetEntry(hash)
+	if !ok {
+		t.Fatalf("entry not found for %s", hash.Hex())
+	}
+	if withOutbound {
+		storeOutbound(entry)
+	}
+	pool.RecordResult(hash, true)
+	if egressIP != "" {
+		entry.SetEgressIP(netip.MustParseAddr(egressIP))
+	}
+	if entry.LatencyTable != nil {
+		entry.LatencyTable.Update("cloudflare.com", 50*time.Millisecond, time.Minute)
+	}
+	return hash
+}
+
+func queuedNormalProbeTasks(mgr *ProbeManager) []probeTask {
+	mgr.taskQueue.mu.Lock()
+	defer mgr.taskQueue.mu.Unlock()
+	return append([]probeTask(nil), mgr.taskQueue.normal.items[mgr.taskQueue.normal.head:]...)
 }
 
 // TestProbeEgress_ZeroLatencyIgnored verifies that a successful probe with a

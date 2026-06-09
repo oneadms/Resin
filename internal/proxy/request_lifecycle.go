@@ -79,6 +79,9 @@ func (l *requestLifecycle) finish() {
 
 	durationNs := time.Since(l.startedAt).Nanoseconds()
 	l.finished.DurationNs = durationNs
+	l.finished.NodeHash = l.log.NodeHash
+	l.finished.IngressBytes = l.log.IngressBytes
+	l.finished.EgressBytes = l.log.EgressBytes
 	l.log.DurationNs = durationNs
 	l.events.EmitRequestFinished(l.finished)
 	l.events.EmitRequestLog(l.log)

@@ -86,6 +86,9 @@ func (r *CacheRepo) BulkUpsertNodesDynamic(nodes []model.NodeDynamic) error {
 				n.LastLatencyProbeAttemptNs,
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
+				n.LastBandwidthProbeAttemptNs,
+				n.LastBandwidthUpdateNs,
+				n.BandwidthMbps,
 				n.ManualDisabled,
 			)
 			return err
@@ -111,6 +114,7 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 	rows, err := r.db.Query(`
 		SELECT hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
 		       last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns,
+		       last_bandwidth_probe_attempt_ns, last_bandwidth_update_ns, bandwidth_mbps,
 		       manual_disabled
 		FROM nodes_dynamic`)
 	if err != nil {
@@ -131,6 +135,9 @@ func (r *CacheRepo) LoadAllNodesDynamic() ([]model.NodeDynamic, error) {
 			&n.LastLatencyProbeAttemptNs,
 			&n.LastAuthorityLatencyProbeAttemptNs,
 			&n.LastEgressUpdateAttemptNs,
+			&n.LastBandwidthProbeAttemptNs,
+			&n.LastBandwidthUpdateNs,
+			&n.BandwidthMbps,
 			&n.ManualDisabled,
 		); err != nil {
 			return nil, err
@@ -401,6 +408,9 @@ func (r *CacheRepo) FlushTx(ops FlushOps) error {
 				n.LastLatencyProbeAttemptNs,
 				n.LastAuthorityLatencyProbeAttemptNs,
 				n.LastEgressUpdateAttemptNs,
+				n.LastBandwidthProbeAttemptNs,
+				n.LastBandwidthUpdateNs,
+				n.BandwidthMbps,
 				n.ManualDisabled,
 			)
 			return err
@@ -458,9 +468,10 @@ const (
 	upsertNodesDynamicSQL = `INSERT INTO nodes_dynamic (
 			hash, failure_count, circuit_open_since, egress_ip, egress_region, egress_updated_at_ns,
 			last_latency_probe_attempt_ns, last_authority_latency_probe_attempt_ns, last_egress_update_attempt_ns,
+			last_bandwidth_probe_attempt_ns, last_bandwidth_update_ns, bandwidth_mbps,
 			manual_disabled
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(hash) DO UPDATE SET
 			failure_count                          = excluded.failure_count,
 			circuit_open_since                     = excluded.circuit_open_since,
@@ -470,6 +481,9 @@ const (
 			last_latency_probe_attempt_ns          = excluded.last_latency_probe_attempt_ns,
 			last_authority_latency_probe_attempt_ns = excluded.last_authority_latency_probe_attempt_ns,
 			last_egress_update_attempt_ns          = excluded.last_egress_update_attempt_ns,
+			last_bandwidth_probe_attempt_ns        = excluded.last_bandwidth_probe_attempt_ns,
+			last_bandwidth_update_ns               = excluded.last_bandwidth_update_ns,
+			bandwidth_mbps                         = excluded.bandwidth_mbps,
 			manual_disabled                        = excluded.manual_disabled`
 
 	upsertNodeLatencySQL = `INSERT INTO node_latency (node_hash, domain, ewma_ns, last_updated_ns)

@@ -156,6 +156,73 @@ func TestRandomRoute_SingleNodeTrustsViewWithoutPoolValidation(t *testing.T) {
 	}
 }
 
+func TestRandomRoute_SmallViewFullScanPrefersBestPerformance(t *testing.T) {
+	pool := newRouterTestPool()
+	plat := platform.NewPlatform("plat-small-quality", "Plat-Small-Quality", nil, nil)
+	plat.AllocationPolicy = platform.AllocationPolicyBalanced
+	pool.addPlatform(plat)
+
+	type candidate struct {
+		raw       string
+		ip        string
+		latency   time.Duration
+		bandwidth float64
+	}
+	candidates := []candidate{
+		{raw: `{"id":"small-quality-a"}`, ip: "203.0.113.101", latency: 300 * time.Millisecond, bandwidth: 8},
+		{raw: `{"id":"small-quality-b"}`, ip: "203.0.113.102", latency: 220 * time.Millisecond, bandwidth: 14},
+		{raw: `{"id":"small-quality-best"}`, ip: "203.0.113.103", latency: 180 * time.Millisecond, bandwidth: 50},
+		{raw: `{"id":"small-quality-c"}`, ip: "203.0.113.104", latency: 120 * time.Millisecond, bandwidth: 5},
+		{raw: `{"id":"small-quality-d"}`, ip: "203.0.113.105", latency: 400 * time.Millisecond, bandwidth: 20},
+	}
+
+	bestHash := node.Zero
+	nowNs := time.Now().UnixNano()
+	for _, c := range candidates {
+		h, entry := newRoutableEntry(t, c.raw, c.ip)
+		entry.LatencyTable.Update("example.com", c.latency, 10*time.Minute)
+		waitForDomainLatency(t, entry, "example.com")
+		entry.StoreBandwidthMbps(c.bandwidth)
+		entry.LastBandwidthUpdate.Store(nowNs)
+		pool.addEntry(h, entry)
+		if c.raw == `{"id":"small-quality-best"}` {
+			bestHash = h
+		}
+	}
+	pool.rebuildPlatformView(plat)
+
+	got, err := randomRoute(
+		plat,
+		NewIPLoadStats(),
+		pool,
+		"example.com",
+		nil,
+		10*time.Minute,
+	)
+	if err != nil {
+		t.Fatalf("randomRoute: %v", err)
+	}
+	if got != bestHash {
+		t.Fatalf("small view should full-scan and select best performance node: got=%s want=%s", got.Hex(), bestHash.Hex())
+	}
+}
+
+func TestCalculateScore_BalancedKeepsPerformanceDominant(t *testing.T) {
+	plat := platform.NewPlatform("plat-balanced-score", "Plat-Balanced-Score", nil, nil)
+	plat.AllocationPolicy = platform.AllocationPolicyBalanced
+	stats := NewIPLoadStats()
+
+	_, fastEntry := newRoutableEntry(t, `{"id":"balanced-fast"}`, "203.0.113.111")
+	_, slowEntry := newRoutableEntry(t, `{"id":"balanced-slow"}`, "203.0.113.112")
+	stats.Inc(fastEntry.GetEgressIP())
+
+	fastScore := calculateScore(fastEntry, 1000, plat, stats)
+	slowScore := calculateScore(slowEntry, 1300, plat, stats)
+	if fastScore >= slowScore {
+		t.Fatalf("balanced score should keep obvious performance winner despite one lease: fast=%v slow=%v", fastScore, slowScore)
+	}
+}
+
 func TestCompareLatencies_ComparableTargetDomain(t *testing.T) {
 	pool := newRouterTestPool()
 
@@ -243,6 +310,205 @@ func TestChooseSameIPRotationCandidate_PicksLowestLatency(t *testing.T) {
 	}
 	if hash != candidateB {
 		t.Fatalf("expected lowest-latency candidate %s, got %s", candidateB.Hex(), hash.Hex())
+	}
+}
+
+func TestPerformanceCost_EqualLatencyPrefersHigherBandwidth(t *testing.T) {
+	pool := newRouterTestPool()
+	plat := platform.NewPlatform("plat-bandwidth", "Plat-Bandwidth", nil, nil)
+	plat.AllocationPolicy = platform.AllocationPolicyPreferLowLatency
+	pool.addPlatform(plat)
+
+	fastHash, fastEntry := newRoutableEntry(t, `{"id":"fast-bandwidth"}`, "203.0.113.40")
+	slowHash, slowEntry := newRoutableEntry(t, `{"id":"slow-bandwidth"}`, "203.0.113.41")
+	fastEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	slowEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	waitForDomainLatency(t, fastEntry, "example.com")
+	waitForDomainLatency(t, slowEntry, "example.com")
+	fastEntry.StoreBandwidthMbps(100)
+	slowEntry.StoreBandwidthMbps(5)
+	nowNs := time.Now().UnixNano()
+	fastEntry.LastBandwidthUpdate.Store(nowNs)
+	slowEntry.LastBandwidthUpdate.Store(nowNs)
+
+	pool.addEntry(fastHash, fastEntry)
+	pool.addEntry(slowHash, slowEntry)
+	pool.rebuildPlatformView(plat)
+
+	fastCost, slowCost := comparePerformanceCosts(
+		fastHash,
+		slowHash,
+		pool,
+		"example.com",
+		nil,
+		10*time.Minute,
+	)
+	if fastCost >= slowCost {
+		t.Fatalf("fast cost = %v, slow cost = %v; higher bandwidth should be preferred", fastCost, slowCost)
+	}
+}
+
+func TestPerformanceCost_PrefersMeasuredBandwidthOverUnknown(t *testing.T) {
+	pool := newRouterTestPool()
+
+	measuredHash, measuredEntry := newRoutableEntry(t, `{"id":"measured-bandwidth"}`, "203.0.113.42")
+	unknownHash, unknownEntry := newRoutableEntry(t, `{"id":"unknown-bandwidth"}`, "203.0.113.43")
+	measuredEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	unknownEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	waitForDomainLatency(t, measuredEntry, "example.com")
+	waitForDomainLatency(t, unknownEntry, "example.com")
+	measuredEntry.StoreBandwidthMbps(25)
+	measuredEntry.LastBandwidthUpdate.Store(time.Now().UnixNano())
+
+	pool.addEntry(measuredHash, measuredEntry)
+	pool.addEntry(unknownHash, unknownEntry)
+
+	measuredCost, unknownCost := comparePerformanceCosts(
+		measuredHash,
+		unknownHash,
+		pool,
+		"example.com",
+		nil,
+		10*time.Minute,
+	)
+	if measuredCost >= unknownCost {
+		t.Fatalf("measured cost = %v, unknown cost = %v; fresh bandwidth should beat unknown bandwidth", measuredCost, unknownCost)
+	}
+}
+
+func TestChooseSameIPRotationCandidate_PrefersMeasuredBandwidthOverUnknown(t *testing.T) {
+	pool := newRouterTestPool()
+	plat := platform.NewPlatform("plat-rotate-bandwidth", "Plat-Rotate-Bandwidth", nil, nil)
+	pool.addPlatform(plat)
+
+	unknownHash, unknownEntry := newRoutableEntry(t, `{"id":"rotate-unknown-bandwidth"}`, "198.51.100.88")
+	measuredHash, measuredEntry := newRoutableEntry(t, `{"id":"rotate-measured-bandwidth"}`, "198.51.100.88")
+	unknownEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	measuredEntry.LatencyTable.Update("example.com", 50*time.Millisecond, 10*time.Minute)
+	waitForDomainLatency(t, unknownEntry, "example.com")
+	waitForDomainLatency(t, measuredEntry, "example.com")
+	measuredEntry.StoreBandwidthMbps(50)
+	measuredEntry.LastBandwidthUpdate.Store(time.Now().UnixNano())
+
+	pool.addEntry(unknownHash, unknownEntry)
+	pool.addEntry(measuredHash, measuredEntry)
+	pool.rebuildPlatformView(plat)
+
+	hash, ok := chooseSameIPRotationCandidate(
+		plat,
+		pool,
+		netip.MustParseAddr("198.51.100.88"),
+		"example.com",
+		nil,
+		10*time.Minute,
+	)
+	if !ok {
+		t.Fatal("expected same-ip rotation candidate")
+	}
+	if hash != measuredHash {
+		t.Fatalf("expected measured-bandwidth candidate %s, got %s", measuredHash.Hex(), hash.Hex())
+	}
+}
+
+func TestRouteRequest_StickyLeaseDoesNotMoveToFasterNode(t *testing.T) {
+	pool := newRouterTestPool()
+	plat := platform.NewPlatform("plat-sticky-bandwidth", "Plat-Sticky-Bandwidth", nil, nil)
+	plat.StickyTTLNs = int64(time.Hour)
+	pool.addPlatform(plat)
+
+	leasedHash, leasedEntry := newRoutableEntry(t, `{"id":"leased-slow"}`, "198.51.100.10")
+	fastHash, fastEntry := newRoutableEntry(t, `{"id":"unleased-fast"}`, "198.51.100.11")
+	leasedEntry.StoreBandwidthMbps(5)
+	fastEntry.StoreBandwidthMbps(100)
+	nowNs := time.Now().UnixNano()
+	leasedEntry.LastBandwidthUpdate.Store(nowNs)
+	fastEntry.LastBandwidthUpdate.Store(nowNs)
+	pool.addEntry(leasedHash, leasedEntry)
+	pool.addEntry(fastHash, fastEntry)
+	pool.rebuildPlatformView(plat)
+
+	router := newTestRouter(pool, nil)
+	state, _ := router.states.LoadOrCompute(plat.ID, func() (*PlatformRoutingState, bool) {
+		return NewPlatformRoutingState(), false
+	})
+	state.Leases.CreateLease("acct-sticky", Lease{
+		NodeHash:       leasedHash,
+		EgressIP:       leasedEntry.GetEgressIP(),
+		CreatedAtNs:    nowNs,
+		ExpiryNs:       time.Now().Add(time.Hour).UnixNano(),
+		LastAccessedNs: nowNs,
+	})
+
+	result, err := router.RouteRequest(plat.Name, "acct-sticky", "https://example.com")
+	if err != nil {
+		t.Fatalf("RouteRequest: %v", err)
+	}
+	if result.NodeHash != leasedHash {
+		t.Fatalf("sticky route moved to %s, want existing lease %s", result.NodeHash.Hex(), leasedHash.Hex())
+	}
+}
+
+func TestPruneInvalidLeases_RemovesOnlyUnroutableLeases(t *testing.T) {
+	pool := newRouterTestPool()
+	plat := platform.NewPlatform("plat-prune", "Plat-Prune", nil, nil)
+	pool.addPlatform(plat)
+
+	validHash, validEntry := newRoutableEntry(t, `{"id":"valid-prune"}`, "198.51.100.70")
+	disabledHash, disabledEntry := newRoutableEntry(t, `{"id":"disabled-prune"}`, "198.51.100.71")
+	pool.addEntry(validHash, validEntry)
+	pool.addEntry(disabledHash, disabledEntry)
+	pool.rebuildPlatformView(plat)
+	disabledEntry.SetManualDisabled(true)
+	plat.NotifyDirty(
+		disabledHash,
+		pool.GetEntry,
+		func(_ string, _ node.Hash) (string, bool, []string, bool) { return "", true, nil, true },
+		func(_ netip.Addr) string { return "" },
+	)
+
+	var events []LeaseEvent
+	router := newTestRouter(pool, func(e LeaseEvent) {
+		events = append(events, e)
+	})
+	state, _ := router.states.LoadOrCompute(plat.ID, func() (*PlatformRoutingState, bool) {
+		return NewPlatformRoutingState(), false
+	})
+	now := time.Now()
+	state.Leases.CreateLease("valid", Lease{
+		NodeHash:       validHash,
+		EgressIP:       validEntry.GetEgressIP(),
+		CreatedAtNs:    now.UnixNano(),
+		ExpiryNs:       now.Add(time.Hour).UnixNano(),
+		LastAccessedNs: now.UnixNano(),
+	})
+	state.Leases.CreateLease("invalid", Lease{
+		NodeHash:       disabledHash,
+		EgressIP:       disabledEntry.GetEgressIP(),
+		CreatedAtNs:    now.UnixNano(),
+		ExpiryNs:       now.Add(time.Hour).UnixNano(),
+		LastAccessedNs: now.UnixNano(),
+	})
+
+	if pruned := router.PruneInvalidLeases(now); pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if _, ok := state.Leases.GetLease("valid"); !ok {
+		t.Fatal("valid lease should remain")
+	}
+	if _, ok := state.Leases.GetLease("invalid"); ok {
+		t.Fatal("invalid lease should be removed")
+	}
+	if got := state.IPLoadStats.Get(disabledEntry.GetEgressIP()); got != 0 {
+		t.Fatalf("disabled ip load = %d, want 0", got)
+	}
+	foundRemove := false
+	for _, e := range events {
+		if e.Type == LeaseRemove && e.Account == "invalid" {
+			foundRemove = true
+		}
+	}
+	if !foundRemove {
+		t.Fatal("expected LeaseRemove event for pruned lease")
 	}
 }
 

@@ -266,6 +266,9 @@ func (a *resinApp) bootstrapFromPersistence(engine *state.StateEngine) error {
 	} else if len(leases) > 0 {
 		a.topoRuntime.router.RestoreLeases(leases)
 		log.Printf("Restored %d leases from cache.db", len(leases))
+		if pruned := a.topoRuntime.router.PruneInvalidLeases(time.Now()); pruned > 0 {
+			log.Printf("Pruned %d invalid leases after platform rebuild", pruned)
+		}
 	}
 
 	flushReaders := newFlushReaders(a.topoRuntime.pool, a.topoRuntime.subManager, a.topoRuntime.router)
@@ -395,16 +398,16 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 	}
 
 	cpService := &service.ControlPlaneService{
-		RuntimeCfg:              a.runtimeCfg,
-		EnvCfg:                  a.envCfg,
-		Engine:                  engine,
-		Pool:                    a.topoRuntime.pool,
-		SubMgr:                  a.topoRuntime.subManager,
-		Scheduler:               a.topoRuntime.scheduler,
-		Router:                  a.topoRuntime.router,
-		ProbeMgr:                a.topoRuntime.probeMgr,
-		GeoIP:                   a.geoSvc,
-		MatcherRuntime:          a.accountMatcher,
+		RuntimeCfg:             a.runtimeCfg,
+		EnvCfg:                 a.envCfg,
+		Engine:                 engine,
+		Pool:                   a.topoRuntime.pool,
+		SubMgr:                 a.topoRuntime.subManager,
+		Scheduler:              a.topoRuntime.scheduler,
+		Router:                 a.topoRuntime.router,
+		ProbeMgr:               a.topoRuntime.probeMgr,
+		GeoIP:                  a.geoSvc,
+		MatcherRuntime:         a.accountMatcher,
 		OnRuntimeConfigUpdated: a.closeReverseProxyIdleConnectionsOnIPVersionChange,
 	}
 
@@ -498,8 +501,8 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 }
 
 func (a *resinApp) buildProxyEvents() proxy.ConfigAwareEventEmitter {
-	// Composite emitter: requestlog handles EmitRequestLog, metricsManager handles EmitRequestFinished.
-	composite := compositeEmitter{logSvc: a.requestlogSvc, metricsMgr: a.metricsManager}
+	// Composite emitter fans out request events to logging, metrics, and passive node quality learning.
+	composite := compositeEmitter{logSvc: a.requestlogSvc, metricsMgr: a.metricsManager, pool: a.topoRuntime.pool}
 	return proxy.ConfigAwareEventEmitter{
 		Base: composite,
 		RequestLogEnabled: func() bool {

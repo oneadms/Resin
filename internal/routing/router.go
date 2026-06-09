@@ -420,7 +420,7 @@ func chooseSameIPRotationCandidate(
 	window time.Duration,
 ) (node.Hash, bool) {
 	bestKnownHash := node.Zero
-	bestKnownLatency := time.Duration(math.MaxInt64)
+	bestKnownCost := math.MaxFloat64
 	fallbackHash := node.Zero
 
 	plat.View().Range(func(h node.Hash) bool {
@@ -432,9 +432,9 @@ func chooseSameIPRotationCandidate(
 			fallbackHash = h
 		}
 
-		latency, hasLatency := sameIPCandidateLatency(entry, targetDomain, authorities, window)
-		if hasLatency && latency < bestKnownLatency {
-			bestKnownLatency = latency
+		cost, hasQuality := sameIPCandidatePerformanceCost(entry, targetDomain, authorities, window)
+		if hasQuality && cost < bestKnownCost {
+			bestKnownCost = cost
 			bestKnownHash = h
 		}
 		return true
@@ -449,21 +449,17 @@ func chooseSameIPRotationCandidate(
 	return node.Zero, false
 }
 
-func sameIPCandidateLatency(
+func sameIPCandidatePerformanceCost(
 	entry *node.NodeEntry,
 	targetDomain string,
 	authorities []string,
 	window time.Duration,
-) (time.Duration, bool) {
+) (float64, bool) {
 	now := time.Now()
-	if latency, ok := lookupRecentDomainLatency(entry, targetDomain, now, window); ok {
-		return latency, true
+	if entry == nil {
+		return 0, false
 	}
-
-	if latency, ok := averageRecentAuthorityLatency(entry, authorities, now, window); ok {
-		return latency, true
-	}
-	return 0, false
+	return entryPerformanceCostMs(entry, targetDomain, authorities, now, window), true
 }
 
 // ReadLease implements weak persistence read.
@@ -573,6 +569,54 @@ func (r *Router) RestoreLeases(leases []model.Lease) {
 		// Directly insert into table and stats
 		state.Leases.CreateLease(ml.Account, l)
 	}
+}
+
+// PruneInvalidLeases removes restored or stale leases that no longer point to a
+// currently routable node. Valid leases are left untouched to preserve account
+// stickiness.
+func (r *Router) PruneInvalidLeases(now time.Time) int {
+	if r == nil {
+		return 0
+	}
+	nowNs := now.UnixNano()
+	pruned := 0
+	r.states.Range(func(platformID string, state *PlatformRoutingState) bool {
+		plat, platformOK := r.pool.GetPlatform(platformID)
+		state.Leases.Range(func(account string, lease Lease) bool {
+			invalid := !platformOK
+			expired := lease.ExpiryNs < nowNs
+			if !invalid && !expired {
+				entry, ok := r.pool.GetEntry(lease.NodeHash)
+				invalid = !ok || !plat.View().Contains(lease.NodeHash) || entry.GetEgressIP() != lease.EgressIP
+			}
+			if !invalid && !expired {
+				return true
+			}
+			state.Leases.leases.Compute(account, func(current Lease, loaded bool) (Lease, xsync.ComputeOp) {
+				if !loaded || current.NodeHash != lease.NodeHash || current.EgressIP != lease.EgressIP {
+					return current, xsync.CancelOp
+				}
+				state.Leases.stats.Dec(current.EgressIP)
+				eventType := LeaseRemove
+				if current.ExpiryNs < nowNs {
+					eventType = LeaseExpire
+				}
+				r.emitLeaseEvent(LeaseEvent{
+					Type:        eventType,
+					PlatformID:  platformID,
+					Account:     account,
+					NodeHash:    current.NodeHash,
+					EgressIP:    current.EgressIP,
+					CreatedAtNs: current.CreatedAtNs,
+				})
+				pruned++
+				return current, xsync.DeleteOp
+			})
+			return true
+		})
+		return true
+	})
+	return pruned
 }
 
 // RangeLeases iterates over all leases for a platform.

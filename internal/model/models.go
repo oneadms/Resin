@@ -50,16 +50,19 @@ type NodeStatic struct {
 
 // NodeDynamic holds the mutable runtime state of a node.
 type NodeDynamic struct {
-	Hash                               string `json:"hash"`
-	FailureCount                       int    `json:"failure_count"`
-	CircuitOpenSince                   int64  `json:"circuit_open_since"`
-	EgressIP                           string `json:"egress_ip"`
-	EgressRegion                       string `json:"egress_region"`
-	EgressUpdatedAtNs                  int64  `json:"egress_updated_at_ns"`
-	LastLatencyProbeAttemptNs          int64  `json:"last_latency_probe_attempt_ns"`
-	LastAuthorityLatencyProbeAttemptNs int64  `json:"last_authority_latency_probe_attempt_ns"`
-	LastEgressUpdateAttemptNs          int64  `json:"last_egress_update_attempt_ns"`
-	ManualDisabled                     bool   `json:"manual_disabled"`
+	Hash                               string  `json:"hash"`
+	FailureCount                       int     `json:"failure_count"`
+	CircuitOpenSince                   int64   `json:"circuit_open_since"`
+	EgressIP                           string  `json:"egress_ip"`
+	EgressRegion                       string  `json:"egress_region"`
+	EgressUpdatedAtNs                  int64   `json:"egress_updated_at_ns"`
+	LastLatencyProbeAttemptNs          int64   `json:"last_latency_probe_attempt_ns"`
+	LastAuthorityLatencyProbeAttemptNs int64   `json:"last_authority_latency_probe_attempt_ns"`
+	LastEgressUpdateAttemptNs          int64   `json:"last_egress_update_attempt_ns"`
+	LastBandwidthProbeAttemptNs        int64   `json:"last_bandwidth_probe_attempt_ns"`
+	LastBandwidthUpdateNs              int64   `json:"last_bandwidth_update_ns"`
+	BandwidthMbps                      float64 `json:"bandwidth_mbps"`
+	ManualDisabled                     bool    `json:"manual_disabled"`
 }
 
 // NodeLatency holds per-domain latency statistics for a node.

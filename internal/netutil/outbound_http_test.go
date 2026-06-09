@@ -57,6 +57,37 @@ func TestHTTPGetViaOutbound_AllowNon200(t *testing.T) {
 	}
 }
 
+func TestHTTPDownloadViaOutbound_StreamsUpToLimit(t *testing.T) {
+	const responseBytes = 4096
+	const maxBytes = 1024
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Repeat("x", responseBytes)))
+	}))
+	defer srv.Close()
+
+	ob, err := (&testutil.StubOutboundBuilder{}).Build(nil)
+	if err != nil {
+		t.Fatalf("build outbound: %v", err)
+	}
+	downloaded, elapsed, err := HTTPDownloadViaOutbound(
+		context.Background(),
+		ob,
+		srv.URL,
+		maxBytes,
+		OutboundHTTPOptions{RequireStatusOK: true},
+	)
+	if err != nil {
+		t.Fatalf("HTTPDownloadViaOutbound: %v", err)
+	}
+	if downloaded != maxBytes {
+		t.Fatalf("downloaded = %d, want %d", downloaded, maxBytes)
+	}
+	if elapsed <= 0 {
+		t.Fatalf("elapsed = %v, want positive duration", elapsed)
+	}
+}
+
 func TestConnCloseHook_CloseIsIdempotentAndConcurrentSafe(t *testing.T) {
 	client, server := net.Pipe()
 	defer server.Close()

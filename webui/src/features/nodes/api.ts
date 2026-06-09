@@ -1,6 +1,9 @@
 import { apiRequest } from "../../lib/api-client";
 import type {
+  BandwidthProbeResult,
+  BatchBandwidthProbeResult,
   BatchLatencyProbeResult,
+  BatchQualityProbeResult,
   EgressProbeResult,
   LatencyProbeResult,
   NodeListFilters,
@@ -20,15 +23,18 @@ type ApiNodeSummary = Omit<NodeSummary, "tags"> & {
   circuit_open_since?: string | null;
   egress_ip?: string | null;
   reference_latency_ms?: number | null;
+  download_bandwidth_mbps?: number | null;
   region?: string | null;
   last_egress_update?: string | null;
   last_latency_probe_attempt?: string | null;
   last_authority_latency_probe_attempt?: string | null;
+  last_bandwidth_probe_attempt?: string | null;
+  last_bandwidth_update?: string | null;
   last_egress_update_attempt?: string | null;
 };
 
 function normalizeNode(raw: ApiNodeSummary): NodeSummary {
-  const { reference_latency_ms, ...rest } = raw;
+  const { reference_latency_ms, download_bandwidth_mbps, ...rest } = raw;
   const normalized: NodeSummary = {
     ...rest,
     enabled: raw.enabled !== false,
@@ -42,12 +48,17 @@ function normalizeNode(raw: ApiNodeSummary): NodeSummary {
     last_egress_update: raw.last_egress_update || "",
     last_latency_probe_attempt: raw.last_latency_probe_attempt || "",
     last_authority_latency_probe_attempt: raw.last_authority_latency_probe_attempt || "",
+    last_bandwidth_probe_attempt: raw.last_bandwidth_probe_attempt || "",
+    last_bandwidth_update: raw.last_bandwidth_update || "",
     last_egress_update_attempt: raw.last_egress_update_attempt || "",
   };
 
   // Backend uses `omitempty`; field missing means "no reference latency".
   if (typeof reference_latency_ms === "number") {
     normalized.reference_latency_ms = reference_latency_ms;
+  }
+  if (typeof download_bandwidth_mbps === "number") {
+    normalized.download_bandwidth_mbps = download_bandwidth_mbps;
   }
 
   return normalized;
@@ -133,5 +144,43 @@ export async function batchProbeLatency(
   return apiRequest<BatchLatencyProbeResult>(`${basePath}/actions/probe-latency?${query.toString()}`, {
     method: "POST",
     body: { max_latency_ms: maxLatencyMs },
+  });
+}
+
+export async function probeBandwidth(hash: string): Promise<BandwidthProbeResult> {
+  return apiRequest<BandwidthProbeResult>(`${basePath}/${hash}/actions/probe-bandwidth`, {
+    method: "POST",
+  });
+}
+
+export async function batchProbeBandwidth(
+  filters: NodeListFilters,
+  minDownloadMbps: number
+): Promise<BatchBandwidthProbeResult> {
+  const query = new URLSearchParams();
+  appendNodeFilters(query, filters);
+  return apiRequest<BatchBandwidthProbeResult>(`${basePath}/actions/probe-bandwidth?${query.toString()}`, {
+    method: "POST",
+    body: { min_download_mbps: minDownloadMbps },
+  });
+}
+
+export async function batchProbeQuality(
+  filters: NodeListFilters,
+  maxLatencyMs: number,
+  minDownloadMbps: number,
+  disableFailed: boolean,
+  recoverDisabled: boolean
+): Promise<BatchQualityProbeResult> {
+  const query = new URLSearchParams();
+  appendNodeFilters(query, recoverDisabled ? { ...filters, enabled: undefined } : filters);
+  return apiRequest<BatchQualityProbeResult>(`${basePath}/actions/probe-quality?${query.toString()}`, {
+    method: "POST",
+    body: {
+      max_latency_ms: maxLatencyMs,
+      min_download_mbps: minDownloadMbps,
+      disable_failed: disableFailed,
+      recover_disabled: recoverDisabled,
+    },
   });
 }

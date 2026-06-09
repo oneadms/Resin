@@ -651,6 +651,25 @@ func (p *GlobalNodePool) RecordLatency(hash node.Hash, rawTarget string, latency
 	}
 }
 
+// RecordBandwidth records a bandwidth probe attempt and an optional successful
+// download sample. Failures update only the attempt timestamp.
+func (p *GlobalNodePool) RecordBandwidth(hash node.Hash, mbps *float64) {
+	entry, ok := p.nodes.Load(hash)
+	if !ok {
+		return
+	}
+
+	nowNs := time.Now().UnixNano()
+	entry.LastBandwidthProbeAttempt.Store(nowNs)
+	if mbps != nil && *mbps > 0 {
+		entry.UpdateBandwidthMbps(*mbps)
+		entry.LastBandwidthUpdate.Store(nowNs)
+	}
+	if p.onNodeDynamicChanged != nil {
+		p.onNodeDynamicChanged(hash)
+	}
+}
+
 // UpdateNodeEgressIP records an egress probe attempt and optionally updates
 // the node's egress IP and explicit region metadata.
 // Region update rules:

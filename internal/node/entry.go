@@ -2,6 +2,7 @@ package node
 
 import (
 	"encoding/json"
+	"math"
 	"net/netip"
 	"regexp"
 	"strings"
@@ -42,6 +43,9 @@ type NodeEntry struct {
 	LastLatencyProbeAttempt          atomic.Int64
 	LastAuthorityLatencyProbeAttempt atomic.Int64
 	LastEgressUpdateAttempt          atomic.Int64
+	LastBandwidthProbeAttempt        atomic.Int64
+	LastBandwidthUpdate              atomic.Int64
+	bandwidthMbpsBits                atomic.Uint64
 	LatencyTable                     *LatencyTable // per-domain latency stats; nil if not initialized
 
 	// Outbound instance for this node.
@@ -231,6 +235,41 @@ func (e *NodeEntry) HasLatency() bool {
 // HasOutbound returns true if the node has a valid outbound instance.
 func (e *NodeEntry) HasOutbound() bool {
 	return e.Outbound.Load() != nil
+}
+
+// BandwidthMbps returns the latest smoothed download bandwidth sample.
+func (e *NodeEntry) BandwidthMbps() float64 {
+	if e == nil {
+		return 0
+	}
+	return math.Float64frombits(e.bandwidthMbpsBits.Load())
+}
+
+// StoreBandwidthMbps replaces the smoothed bandwidth value.
+func (e *NodeEntry) StoreBandwidthMbps(mbps float64) {
+	if e == nil || mbps <= 0 || math.IsNaN(mbps) || math.IsInf(mbps, 0) {
+		return
+	}
+	e.bandwidthMbpsBits.Store(math.Float64bits(mbps))
+}
+
+// UpdateBandwidthMbps applies a lightweight EWMA to reduce single-run noise.
+func (e *NodeEntry) UpdateBandwidthMbps(sampleMbps float64) float64 {
+	if e == nil || sampleMbps <= 0 || math.IsNaN(sampleMbps) || math.IsInf(sampleMbps, 0) {
+		return e.BandwidthMbps()
+	}
+	const sampleWeight = 0.35
+	for {
+		oldBits := e.bandwidthMbpsBits.Load()
+		old := math.Float64frombits(oldBits)
+		next := sampleMbps
+		if old > 0 {
+			next = old*(1-sampleWeight) + sampleMbps*sampleWeight
+		}
+		if e.bandwidthMbpsBits.CompareAndSwap(oldBits, math.Float64bits(next)) {
+			return next
+		}
+	}
 }
 
 // IsHealthy returns true when the node can be treated as healthy for

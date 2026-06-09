@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createColumnHelper } from "@tanstack/react-table";
-import { AlertTriangle, Eraser, Gauge, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
+import { AlertTriangle, Download, Eraser, Gauge, Globe, RefreshCw, Sparkles, X, Zap } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "../../components/ui/Badge";
@@ -10,6 +10,7 @@ import { Card } from "../../components/ui/Card";
 import { Input } from "../../components/ui/Input";
 import { OffsetPagination } from "../../components/ui/OffsetPagination";
 import { Select } from "../../components/ui/Select";
+import { Switch } from "../../components/ui/Switch";
 import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import { useI18n } from "../../i18n";
@@ -18,14 +19,24 @@ import { formatDateTime, formatRelativeTime } from "../../lib/time";
 import { listPlatforms } from "../platforms/api";
 import type { Platform } from "../platforms/types";
 import { listSubscriptions } from "../subscriptions/api";
-import { batchProbeLatency, getNode, listNodes, probeEgress, probeLatency, updateNode } from "./api";
+import {
+  batchProbeBandwidth,
+  batchProbeLatency,
+  batchProbeQuality,
+  getNode,
+  listNodes,
+  probeBandwidth,
+  probeEgress,
+  probeLatency,
+  updateNode,
+} from "./api";
 import type { NodeSummary } from "./types";
 import { getAllRegions, getRegionName } from "./regions";
 import type { NodeListFilters, NodeSortBy, SortOrder } from "./types";
 
 type NodeStatusFilter = "all" | "healthy" | "circuit_open" | "error" | "disabled";
 type NodeDisplayStatus = "healthy" | "circuit_open" | "pending_test" | "error" | "disabled";
-type ProbeAction = "egress" | "latency";
+type ProbeAction = "egress" | "latency" | "bandwidth";
 
 type NodeFilterDraft = {
   platform_id: string;
@@ -243,6 +254,13 @@ function formatLatency(value: number): string {
   return `${value.toFixed(0)} ms`;
 }
 
+function formatBandwidth(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "-";
+  }
+  return `${value.toFixed(2)} Mbps`;
+}
+
 function sortIndicator(active: boolean, order: SortOrder): string {
   if (!active) {
     return "↕";
@@ -261,7 +279,7 @@ function regionToFlag(region: string | undefined): string {
 }
 
 export function NodesPage() {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const location = useLocation();
   const [draftFilters, setDraftFilters] = useState<NodeFilterDraft>(() => draftFromQuery(location.search));
   const [activeFilters, setActiveFilters] = useState<NodeListFilters>(() =>
@@ -272,17 +290,22 @@ export function NodesPage() {
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(200);
   const [maxLatencyMs, setMaxLatencyMs] = useState("1000");
+  const [minDownloadMbps, setMinDownloadMbps] = useState("5");
+  const [disableFailedQuality, setDisableFailedQuality] = useState(true);
+  const [recoverDisabledQuality, setRecoverDisabledQuality] = useState(false);
   const [selectedNodeHash, setSelectedNodeHash] = useState("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingEgressHashes, setPendingEgressHashes] = useState<Set<string>>(() => new Set());
   const [pendingLatencyHashes, setPendingLatencyHashes] = useState<Set<string>>(() => new Set());
+  const [pendingBandwidthHashes, setPendingBandwidthHashes] = useState<Set<string>>(() => new Set());
   const { toasts, showToast, dismissToast } = useToast();
   const pendingEgressHashesRef = useRef<Set<string>>(new Set());
   const pendingLatencyHashesRef = useRef<Set<string>>(new Set());
+  const pendingBandwidthHashesRef = useRef<Set<string>>(new Set());
 
   const queryClient = useQueryClient();
 
-  const allRegions = useMemo(() => getAllRegions(), [locale]);
+  const allRegions = useMemo(() => getAllRegions(), []);
 
   const platformsQuery = useQuery({
     queryKey: ["platforms", "all"],
@@ -414,6 +437,24 @@ export function NodesPage() {
     },
   });
 
+  const probeBandwidthMutation = useMutation({
+    mutationFn: async (hash: string) => probeBandwidth(hash),
+    onSuccess: async (result) => {
+      await refreshNodes();
+      showToast(
+        "success",
+        t("带宽测试完成：下载={{bandwidth}}，耗时={{elapsed}} ms", {
+          bandwidth: formatBandwidth(result.download_mbps),
+          elapsed: result.elapsed_ms.toFixed(0),
+        })
+      );
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
   const updateNodeMutation = useMutation({
     mutationFn: async ({ hash, manualDisabled }: { hash: string; manualDisabled: boolean }) =>
       updateNode(hash, { manual_disabled: manualDisabled }),
@@ -447,8 +488,66 @@ export function NodesPage() {
     },
   });
 
+  const batchProbeBandwidthMutation = useMutation({
+    mutationFn: async () => batchProbeBandwidth(activeFilters, Number(minDownloadMbps)),
+    onSuccess: async (result) => {
+      await refreshNodes();
+      showToast(
+        "success",
+        t("批量带宽测试完成：成功 {{tested}}，自动禁用 {{disabled}}，失败 {{failed}}，跳过 {{skipped}}", {
+          tested: result.tested_count,
+          disabled: result.disabled_count,
+          failed: result.failed_count,
+          skipped: result.skipped_count,
+        })
+      );
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const batchProbeQualityMutation = useMutation({
+    mutationFn: async () =>
+      batchProbeQuality(
+        activeFilters,
+        Number(maxLatencyMs),
+        Number(minDownloadMbps),
+        disableFailedQuality,
+        recoverDisabledQuality
+      ),
+    onSuccess: async (result) => {
+      await refreshNodes();
+      showToast(
+        "success",
+        t(
+          "质量筛选完成：完整测试 {{tested}}，保留 {{kept}}，恢复 {{reenabled}}，自动禁用 {{disabled}}，其中失败移除 {{failedDisabled}}，延迟超标 {{latencyThreshold}}，带宽低标 {{bandwidthThreshold}}，延迟失败 {{latencyFailed}}，带宽失败 {{bandwidthFailed}}，跳过 {{skipped}}",
+          {
+            tested: result.tested_count,
+            kept: result.kept_count,
+            reenabled: result.reenabled_count,
+            disabled: result.disabled_count,
+            failedDisabled: result.failed_disabled_count,
+            latencyThreshold: result.latency_threshold_failed_count,
+            bandwidthThreshold: result.bandwidth_threshold_failed_count,
+            latencyFailed: result.latency_failed_count,
+            bandwidthFailed: result.bandwidth_failed_count,
+            skipped: result.skipped_count,
+          }
+        )
+      );
+    },
+    onError: async (error) => {
+      await refreshNodes();
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
   const parsedMaxLatencyMs = Number(maxLatencyMs);
   const maxLatencyInvalid = !Number.isFinite(parsedMaxLatencyMs) || parsedMaxLatencyMs <= 0;
+  const parsedMinDownloadMbps = Number(minDownloadMbps);
+  const minDownloadMbpsInvalid = !Number.isFinite(parsedMinDownloadMbps) || parsedMinDownloadMbps <= 0;
 
   const markProbePending = (hash: string, action: ProbeAction): boolean => {
     if (action === "egress") {
@@ -462,13 +561,24 @@ export function NodesPage() {
       return true;
     }
 
-    if (pendingLatencyHashesRef.current.has(hash)) {
+    if (action === "latency") {
+      if (pendingLatencyHashesRef.current.has(hash)) {
+        return false;
+      }
+      const next = new Set(pendingLatencyHashesRef.current);
+      next.add(hash);
+      pendingLatencyHashesRef.current = next;
+      setPendingLatencyHashes(next);
+      return true;
+    }
+
+    if (pendingBandwidthHashesRef.current.has(hash)) {
       return false;
     }
-    const next = new Set(pendingLatencyHashesRef.current);
+    const next = new Set(pendingBandwidthHashesRef.current);
     next.add(hash);
-    pendingLatencyHashesRef.current = next;
-    setPendingLatencyHashes(next);
+    pendingBandwidthHashesRef.current = next;
+    setPendingBandwidthHashes(next);
     return true;
   };
 
@@ -484,17 +594,35 @@ export function NodesPage() {
       return;
     }
 
-    if (!pendingLatencyHashesRef.current.has(hash)) {
+    if (action === "latency") {
+      if (!pendingLatencyHashesRef.current.has(hash)) {
+        return;
+      }
+      const next = new Set(pendingLatencyHashesRef.current);
+      next.delete(hash);
+      pendingLatencyHashesRef.current = next;
+      setPendingLatencyHashes(next);
       return;
     }
-    const next = new Set(pendingLatencyHashesRef.current);
+
+    if (!pendingBandwidthHashesRef.current.has(hash)) {
+      return;
+    }
+    const next = new Set(pendingBandwidthHashesRef.current);
     next.delete(hash);
-    pendingLatencyHashesRef.current = next;
-    setPendingLatencyHashes(next);
+    pendingBandwidthHashesRef.current = next;
+    setPendingBandwidthHashes(next);
   };
 
-  const isProbePending = (hash: string, action: ProbeAction): boolean =>
-    action === "egress" ? pendingEgressHashes.has(hash) : pendingLatencyHashes.has(hash);
+  const isProbePending = (hash: string, action: ProbeAction): boolean => {
+    if (action === "egress") {
+      return pendingEgressHashes.has(hash);
+    }
+    if (action === "latency") {
+      return pendingLatencyHashes.has(hash);
+    }
+    return pendingBandwidthHashes.has(hash);
+  };
 
   const runProbeEgress = async (hash: string) => {
     if (!markProbePending(hash, "egress")) {
@@ -519,6 +647,19 @@ export function NodesPage() {
       // Mutation callbacks already surface the failure to the user.
     } finally {
       clearProbePending(hash, "latency");
+    }
+  };
+
+  const runProbeBandwidth = async (hash: string) => {
+    if (!markProbePending(hash, "bandwidth")) {
+      return;
+    }
+    try {
+      await probeBandwidthMutation.mutateAsync(hash);
+    } catch {
+      // Mutation callbacks already surface the failure to the user.
+    } finally {
+      clearProbePending(hash, "bandwidth");
     }
   };
 
@@ -616,6 +757,14 @@ export function NodesPage() {
         );
       },
     }),
+    col.display({
+      id: "download_bandwidth_mbps",
+      header: t("下载带宽"),
+      cell: (info) => {
+        const bandwidth = info.row.original.download_bandwidth_mbps;
+        return typeof bandwidth === "number" ? formatBandwidth(bandwidth) : "-";
+      },
+    }),
     col.accessor("last_latency_probe_attempt", {
       header: t("上次探测"),
       cell: (info) => formatRelativeTime(info.getValue()),
@@ -691,6 +840,15 @@ export function NodesPage() {
               disabled={isProbePending(node.node_hash, "latency")}
             >
               <Zap size={14} />
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              title={t("触发带宽测试")}
+              onClick={() => void runProbeBandwidth(node.node_hash)}
+              disabled={isProbePending(node.node_hash, "bandwidth")}
+            >
+              <Download size={14} />
             </Button>
           </div>
         );
@@ -826,7 +984,17 @@ export function NodesPage() {
               </Select>
             </div>
 
-            <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.125rem", marginLeft: "auto" }}>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                justifyContent: "flex-end",
+                gap: "0.5rem",
+                marginBottom: "0.125rem",
+                marginLeft: "auto",
+                maxWidth: "100%",
+              }}
+            >
               <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                 <label htmlFor="node-max-latency" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                   {t("自动移除延迟高于")}
@@ -851,7 +1019,90 @@ export function NodesPage() {
                 style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", alignSelf: "flex-end" }}
               >
                 <Gauge size={16} className={batchProbeLatencyMutation.isPending ? "spin" : undefined} />
-                {batchProbeLatencyMutation.isPending ? t("测试中...") : t("一键测速并移除")}
+                {batchProbeLatencyMutation.isPending ? t("测试中...") : t("延迟测试并移除")}
+              </Button>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                <label htmlFor="node-min-bandwidth" style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                  {t("自动移除带宽低于 (Mbps)")}
+                </label>
+                <Input
+                  id="node-min-bandwidth"
+                  type="number"
+                  min="0.1"
+                  step="1"
+                  value={minDownloadMbps}
+                  invalid={minDownloadMbpsInvalid}
+                  onChange={(event) => setMinDownloadMbps(event.target.value)}
+                  style={{ ...NODE_FILTER_CONTROL_STYLE, width: "110px" }}
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="danger"
+                title={t("下载固定测试数据，并自动禁用低于最低带宽的节点")}
+                onClick={() => batchProbeBandwidthMutation.mutate()}
+                disabled={batchProbeBandwidthMutation.isPending || minDownloadMbpsInvalid}
+                style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", alignSelf: "flex-end" }}
+              >
+                <Download size={16} className={batchProbeBandwidthMutation.isPending ? "spin" : undefined} />
+                {batchProbeBandwidthMutation.isPending ? t("测试中...") : t("一键带宽测试并移除")}
+              </Button>
+              <label
+                htmlFor="node-disable-failed-quality"
+                title={t("严格筛选会禁用无法完成延迟或带宽测试的节点")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  alignSelf: "flex-end",
+                  minHeight: "32px",
+                  fontSize: "0.75rem",
+                  color: "var(--text-secondary)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <Switch
+                  id="node-disable-failed-quality"
+                  checked={disableFailedQuality}
+                  onChange={(event) => setDisableFailedQuality(event.target.checked)}
+                />
+                {t("失败也移除")}
+              </label>
+              <label
+                htmlFor="node-recover-disabled-quality"
+                title={t("测试手动禁用节点，并自动恢复通过质量阈值的节点")}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.4rem",
+                  alignSelf: "flex-end",
+                  minHeight: "32px",
+                  fontSize: "0.75rem",
+                  color: "var(--text-secondary)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                <Switch
+                  id="node-recover-disabled-quality"
+                  checked={recoverDisabledQuality}
+                  onChange={(event) => setRecoverDisabledQuality(event.target.checked)}
+                />
+                {t("恢复禁用节点")}
+              </label>
+              <Button
+                size="sm"
+                variant="danger"
+                title={t("同时测试延迟和带宽，并自动禁用任一指标不达标的节点")}
+                onClick={() => batchProbeQualityMutation.mutate()}
+                disabled={
+                  batchProbeQualityMutation.isPending ||
+                  maxLatencyInvalid ||
+                  minDownloadMbpsInvalid
+                }
+                style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem", alignSelf: "flex-end" }}
+              >
+                <Gauge size={16} className={batchProbeQualityMutation.isPending ? "spin" : undefined} />
+                {batchProbeQualityMutation.isPending ? t("测试中...") : t("一键质量筛选")}
               </Button>
               <Button size="sm" variant="secondary" onClick={refreshNodes} disabled={nodesQuery.isFetching} style={{ minHeight: "32px", height: "32px", padding: "0 0.75rem", display: "flex", alignItems: "center", gap: "0.25rem" }}>
                 <RefreshCw size={16} className={nodesQuery.isFetching ? "spin" : undefined} />
@@ -1000,6 +1251,18 @@ export function NodesPage() {
                     })()}
                   </div>
                   <div>
+                    <span>{t("下载带宽")}</span>
+                    <p>
+                      {typeof detailNode.download_bandwidth_mbps === "number"
+                        ? formatBandwidth(detailNode.download_bandwidth_mbps)
+                        : "-"}
+                    </p>
+                  </div>
+                  <div>
+                    <span>{t("带宽更新时间")}</span>
+                    <p>{formatDateTime(detailNode.last_bandwidth_update || "")}</p>
+                  </div>
+                  <div>
                     <span>{t("上次探测")}</span>
                     <p>{formatDateTime(detailNode.last_latency_probe_attempt || "")}</p>
                   </div>
@@ -1084,6 +1347,19 @@ export function NodesPage() {
                       disabled={isProbePending(detailNode.node_hash, "latency")}
                     >
                       {isProbePending(detailNode.node_hash, "latency") ? t("探测中...") : t("触发延迟探测")}
+                    </Button>
+                  </div>
+                  <div className="platform-op-item">
+                    <div className="platform-op-copy">
+                      <h5>{t("带宽测试")}</h5>
+                      <p className="platform-op-hint">{t("通过节点下载固定大小的数据并计算实际速度。")}</p>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      onClick={() => void runProbeBandwidth(detailNode.node_hash)}
+                      disabled={isProbePending(detailNode.node_hash, "bandwidth")}
+                    >
+                      {isProbePending(detailNode.node_hash, "bandwidth") ? t("测试中...") : t("触发带宽测试")}
                     </Button>
                   </div>
                 </div>
