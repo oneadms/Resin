@@ -30,6 +30,7 @@ import {
   platformFormSchema,
   platformNameRuleHint,
   platformToFormValues,
+  staticProxyURLRuleHint,
   toPlatformUpdateInput,
   type PlatformFormValues,
 } from "./formModel";
@@ -193,6 +194,7 @@ export function PlatformDetailPage() {
   const stickyTTL = platform ? formatGoDuration(platform.sticky_ttl, t("默认")) : t("默认");
   const regionCount = platform?.region_filters.length ?? 0;
   const regexCount = platform?.regex_filters.length ?? 0;
+  const staticProxyEnabled = platform ? platform.static_proxy_url.trim().length > 0 : false;
   const deleteDisabled = !platform || platform.id === ZERO_UUID || deleteMutation.isPending;
 
   return (
@@ -281,6 +283,10 @@ export function PlatformDetailPage() {
                   <span>{t("请求失败熔断")}</span>
                   <strong>{platform.passive_circuit_breaker_disabled ? t("已关闭") : t("已开启")}</strong>
                 </span>
+                <span className="platform-fact" title={platform.static_proxy_url || undefined}>
+                  <span>{t("静态代理")}</span>
+                  <strong>{staticProxyEnabled ? t("已启用") : t("未启用")}</strong>
+                </span>
               </div>
             </div>
           </Card>
@@ -365,6 +371,24 @@ export function PlatformDetailPage() {
                       invalid={Boolean(editForm.formState.errors.sticky_ttl)}
                       {...editForm.register("sticky_ttl")}
                     />
+                  </div>
+
+                  <div className="field-group">
+                    <label className="field-label" htmlFor="detail-edit-static-proxy-url">
+                      {t("静态代理 URL")}
+                    </label>
+                    <Input
+                      id="detail-edit-static-proxy-url"
+                      placeholder={t("例如 socks5h://127.0.0.1:1080")}
+                      invalid={Boolean(editForm.formState.errors.static_proxy_url)}
+                      {...editForm.register("static_proxy_url")}
+                    />
+                    {editForm.formState.errors.static_proxy_url?.message ? (
+                      <p className="field-error">{t(editForm.formState.errors.static_proxy_url.message)}</p>
+                    ) : null}
+                    <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                      {t(staticProxyURLRuleHint)}
+                    </p>
                   </div>
 
                   <div className="field-group">

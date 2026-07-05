@@ -83,7 +83,13 @@ func (p *ForwardProxy) outboundHTTPTransport(routed routedOutbound) *http.Transp
 			p.transportPool = NewOutboundTransportPool(p.transportConfig)
 		}
 	})
-	return p.transportPool.Get(routed.Route.NodeHash, routed.Outbound, p.metricsSink)
+	return p.transportPool.Get(
+		routed.Route.PlatformID,
+		routed.Route.NodeHash,
+		routed.StaticProxyURL,
+		routed.Outbound,
+		p.metricsSink,
+	)
 }
 
 func (p *ForwardProxy) directHTTPTransport() *http.Transport {
@@ -417,11 +423,12 @@ func (p *ForwardProxy) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 	prepare := prepareConnectTunnel(
 		r.Context(),
 		tunnelDeps{
-			router:      p.router,
-			pool:        p.pool,
-			health:      p.health,
-			metricsSink: p.metricsSink,
-			bypass:      p.bypass,
+			router:          p.router,
+			pool:            p.pool,
+			health:          p.health,
+			metricsSink:     p.metricsSink,
+			transportConfig: p.transportConfig,
+			bypass:          p.bypass,
 		},
 		platName,
 		account,

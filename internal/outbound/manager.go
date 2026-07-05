@@ -21,6 +21,15 @@ type PoolAccessor interface {
 	RangeNodes(fn func(node.Hash, *node.NodeEntry) bool)
 }
 
+type outboundBuilderRemover interface {
+	Remove(rawOptions json.RawMessage)
+}
+
+// DetourResolver validates and resolves node-level detour chains.
+type DetourResolver interface {
+	ResolveNodeDetourChain(hash node.Hash) ([]node.Hash, error)
+}
+
 // closeOutbound closes an outbound if it implements io.Closer.
 func closeOutbound(ob adapter.Outbound) {
 	if c, ok := ob.(io.Closer); ok {
@@ -43,12 +52,17 @@ func buildOutboundSafely(builder OutboundBuilder, rawOptions json.RawMessage) (o
 
 // OutboundManager manages outbound lifecycle and provides unified HTTP execution.
 type OutboundManager struct {
-	pool    PoolAccessor
-	builder OutboundBuilder
+	pool           PoolAccessor
+	builder        OutboundBuilder
+	detourResolver DetourResolver
 }
 
 func NewOutboundManager(pool PoolAccessor, builder OutboundBuilder) *OutboundManager {
-	return &OutboundManager{pool: pool, builder: builder}
+	manager := &OutboundManager{pool: pool, builder: builder}
+	if resolver, ok := pool.(DetourResolver); ok {
+		manager.detourResolver = resolver
+	}
+	return manager
 }
 
 func (m *OutboundManager) isLiveEntry(hash node.Hash, entry *node.NodeEntry) bool {
@@ -60,6 +74,10 @@ func (m *OutboundManager) isLiveEntry(hash node.Hash, entry *node.NodeEntry) boo
 // Uses CompareAndSwap(nil, &wrapped) to guarantee only one goroutine's build
 // result is stored. Losers discard their result (stage 6 adds io.Closer release).
 func (m *OutboundManager) EnsureNodeOutbound(hash node.Hash) {
+	m.ensureNodeOutbound(hash, nil)
+}
+
+func (m *OutboundManager) ensureNodeOutbound(hash node.Hash, stack map[node.Hash]bool) {
 	entry, ok := m.pool.GetEntry(hash)
 	if !ok {
 		return
@@ -67,6 +85,35 @@ func (m *OutboundManager) EnsureNodeOutbound(hash node.Hash) {
 	// Fast path: already has outbound.
 	if entry.Outbound.Load() != nil {
 		return
+	}
+
+	if m.detourResolver != nil {
+		chain, err := m.detourResolver.ResolveNodeDetourChain(hash)
+		if err != nil {
+			entry.SetLastError("detour: " + err.Error())
+			return
+		}
+		if len(chain) > 0 {
+			if stack == nil {
+				stack = map[node.Hash]bool{}
+			}
+			if stack[hash] {
+				entry.SetLastError("detour: cycle includes " + hash.Hex())
+				return
+			}
+			stack[hash] = true
+			for i := len(chain) - 1; i >= 0; i-- {
+				targetHash := chain[i]
+				m.ensureNodeOutbound(targetHash, stack)
+				targetEntry, ok := m.pool.GetEntry(targetHash)
+				if !ok || targetEntry == nil || targetEntry.Outbound.Load() == nil {
+					entry.SetLastError("detour: target outbound not ready: " + targetHash.Hex())
+					delete(stack, hash)
+					return
+				}
+			}
+			delete(stack, hash)
+		}
 	}
 
 	ob, err := buildOutboundSafely(m.builder, entry.RawOptions)
@@ -103,6 +150,9 @@ func (m *OutboundManager) EnsureNodeOutbound(hash node.Hash) {
 func (m *OutboundManager) RemoveNodeOutbound(entry *node.NodeEntry) {
 	if entry == nil {
 		return
+	}
+	if remover, ok := m.builder.(outboundBuilderRemover); ok {
+		remover.Remove(entry.RawOptions)
 	}
 	old := entry.Outbound.Swap(nil)
 	if old != nil {

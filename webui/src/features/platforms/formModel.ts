@@ -6,6 +6,7 @@ import type { Platform, PlatformCreateInput, PlatformUpdateInput } from "./types
 const platformNameForbiddenChars = ".:|/\\@?#%~";
 const platformNameForbiddenSpacing = " \t\r\n";
 const platformNameReserved = "api";
+const staticProxySchemes = new Set(["http:", "https:", "socks5:", "socks5h:"]);
 
 function containsAny(source: string, chars: string): boolean {
   for (const ch of chars) {
@@ -17,6 +18,7 @@ function containsAny(source: string, chars: string): boolean {
 }
 
 export const platformNameRuleHint = "平台名不能包含 .:|/\\@?#%~、空格、Tab、换行、回车，也不能为保留字。";
+export const staticProxyURLRuleHint = "支持 http、https、socks5、socks5h 代理 URL；留空表示不启用。";
 
 export const platformFormSchema = z.object({
   name: z.string().trim()
@@ -38,6 +40,19 @@ export const platformFormSchema = z.object({
   reverse_proxy_fixed_account_header: z.string().optional(),
   allocation_policy: z.enum(allocationPolicies),
   passive_circuit_breaker_disabled: z.boolean(),
+  static_proxy_url: z.string().optional()
+    .refine((value) => {
+      const normalized = value?.trim() ?? "";
+      if (normalized === "") {
+        return true;
+      }
+      try {
+        const parsed = new URL(normalized);
+        return staticProxySchemes.has(parsed.protocol) && parsed.hostname.length > 0;
+      } catch {
+        return false;
+      }
+    }, staticProxyURLRuleHint),
 }).superRefine((value, ctx) => {
   if (
     value.reverse_proxy_empty_account_behavior === "FIXED_HEADER" &&
@@ -63,6 +78,7 @@ export const defaultPlatformFormValues: PlatformFormValues = {
   reverse_proxy_fixed_account_header: "Authorization",
   allocation_policy: "BALANCED",
   passive_circuit_breaker_disabled: false,
+  static_proxy_url: "",
 };
 
 export function platformToFormValues(platform: Platform): PlatformFormValues {
@@ -79,6 +95,7 @@ export function platformToFormValues(platform: Platform): PlatformFormValues {
     reverse_proxy_fixed_account_header: platform.reverse_proxy_fixed_account_header,
     allocation_policy: platform.allocation_policy,
     passive_circuit_breaker_disabled: platform.passive_circuit_breaker_disabled,
+    static_proxy_url: platform.static_proxy_url,
   };
 }
 
@@ -92,6 +109,7 @@ function toPlatformPayloadBase(values: PlatformFormValues) {
     reverse_proxy_fixed_account_header: parseHeaderLines(values.reverse_proxy_fixed_account_header).join("\n"),
     allocation_policy: values.allocation_policy,
     passive_circuit_breaker_disabled: values.passive_circuit_breaker_disabled,
+    static_proxy_url: values.static_proxy_url?.trim() ?? "",
   };
 }
 

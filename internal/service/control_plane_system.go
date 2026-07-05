@@ -50,17 +50,18 @@ func internal(msg string, err error) *ServiceError {
 // ControlPlaneService provides all control plane operations.
 // Handlers call its methods; business logic lives here, not in handlers.
 type ControlPlaneService struct {
-	Engine         *state.StateEngine
-	Pool           *topology.GlobalNodePool
-	SubMgr         *topology.SubscriptionManager
-	Scheduler      *topology.SubscriptionScheduler
-	Router         *routing.Router
-	GeoIP          *geoip.Service
-	ProbeMgr       *probe.ProbeManager
-	MatcherRuntime *proxy.AccountMatcherRuntime
-	RuntimeCfg     *atomic.Pointer[config.RuntimeConfig]
-	EnvCfg         *config.EnvConfig
+	Engine                 *state.StateEngine
+	Pool                   *topology.GlobalNodePool
+	SubMgr                 *topology.SubscriptionManager
+	Scheduler              *topology.SubscriptionScheduler
+	Router                 *routing.Router
+	GeoIP                  *geoip.Service
+	ProbeMgr               *probe.ProbeManager
+	MatcherRuntime         *proxy.AccountMatcherRuntime
+	RuntimeCfg             *atomic.Pointer[config.RuntimeConfig]
+	EnvCfg                 *config.EnvConfig
 	OnRuntimeConfigUpdated func(oldCfg, newCfg *config.RuntimeConfig)
+	OnPlatformChanged      func(platformID string)
 
 	configMu      sync.Mutex
 	configVersion int
@@ -72,7 +73,7 @@ type ControlPlaneService struct {
 
 // runtimeConfigAllowedFields is the set of JSON field names that can be patched.
 var runtimeConfigAllowedFields = map[string]bool{
-	"reverse_proxy_outbound_ip_version":       true,
+	"reverse_proxy_outbound_ip_version":        true,
 	"request_log_enabled":                      true,
 	"reverse_proxy_log_detail_enabled":         true,
 	"reverse_proxy_log_req_headers_max_bytes":  true,
@@ -101,6 +102,7 @@ var platformPatchAllowedFields = map[string]bool{
 	"reverse_proxy_fixed_account_header":   true,
 	"allocation_policy":                    true,
 	"passive_circuit_breaker_disabled":     true,
+	"static_proxy_url":                     true,
 }
 
 var subscriptionPatchAllowedFields = map[string]bool{

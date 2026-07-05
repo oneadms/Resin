@@ -48,12 +48,18 @@ func transportDialNetwork(cfg OutboundTransportConfig, fallback string) string {
 	return fallback
 }
 
-// OutboundTransportPool manages reusable outbound HTTP transports keyed by node hash.
+// OutboundTransportPool manages reusable outbound HTTP transports keyed by platform and node.
 // A single instance should be shared by forward/reverse proxies so keep-alive pools
-// are reused and can be evicted on node removal.
+// are reused and can be evicted on node or platform changes.
 type OutboundTransportPool struct {
 	config     OutboundTransportConfig
-	transports *xsync.Map[node.Hash, *http.Transport]
+	transports *xsync.Map[outboundTransportKey, *http.Transport]
+}
+
+type outboundTransportKey struct {
+	PlatformID     string
+	NodeHash       node.Hash
+	StaticProxyURL string
 }
 
 func newOutboundTransportPool() *OutboundTransportPool {
@@ -68,34 +74,58 @@ func newOutboundTransportPoolWithConfig(cfg OutboundTransportConfig) *OutboundTr
 func NewOutboundTransportPool(cfg OutboundTransportConfig) *OutboundTransportPool {
 	return &OutboundTransportPool{
 		config:     normalizeOutboundTransportConfig(cfg),
-		transports: xsync.NewMap[node.Hash, *http.Transport](),
+		transports: xsync.NewMap[outboundTransportKey, *http.Transport](),
 	}
 }
 
-// Get returns a reusable transport for the given node hash.
+// Get returns a reusable transport for the given platform/node/static-proxy tuple.
 func (p *OutboundTransportPool) Get(
+	platformID string,
 	hash node.Hash,
+	staticProxyURL string,
 	ob adapter.Outbound,
 	sink MetricsEventSink,
 ) *http.Transport {
-	transport, _ := p.transports.LoadOrCompute(hash, func() (*http.Transport, bool) {
-		return p.newReusableOutboundTransport(ob, sink), false
+	key := outboundTransportKey{
+		PlatformID:     platformID,
+		NodeHash:       hash,
+		StaticProxyURL: staticProxyURL,
+	}
+	transport, _ := p.transports.LoadOrCompute(key, func() (*http.Transport, bool) {
+		return p.newReusableOutboundTransport(ob, staticProxyURL, sink), false
 	})
 	return transport
 }
 
-// Evict closes idle connections for one node transport and removes it from pool.
+// Evict closes idle connections for one node's transports and removes them from pool.
 func (p *OutboundTransportPool) Evict(hash node.Hash) {
-	transport, ok := p.transports.LoadAndDelete(hash)
-	if !ok || transport == nil {
-		return
-	}
-	transport.CloseIdleConnections()
+	p.transports.Range(func(key outboundTransportKey, transport *http.Transport) bool {
+		if key.NodeHash != hash {
+			return true
+		}
+		if removed, ok := p.transports.LoadAndDelete(key); ok && removed != nil {
+			removed.CloseIdleConnections()
+		}
+		return true
+	})
+}
+
+// EvictPlatform closes idle connections for one platform's transports.
+func (p *OutboundTransportPool) EvictPlatform(platformID string) {
+	p.transports.Range(func(key outboundTransportKey, transport *http.Transport) bool {
+		if key.PlatformID != platformID {
+			return true
+		}
+		if removed, ok := p.transports.LoadAndDelete(key); ok && removed != nil {
+			removed.CloseIdleConnections()
+		}
+		return true
+	})
 }
 
 // CloseAll closes idle connections and clears all pooled transports.
 func (p *OutboundTransportPool) CloseAll() {
-	p.transports.Range(func(_ node.Hash, transport *http.Transport) bool {
+	p.transports.Range(func(_ outboundTransportKey, transport *http.Transport) bool {
 		if transport != nil {
 			transport.CloseIdleConnections()
 		}
@@ -104,25 +134,57 @@ func (p *OutboundTransportPool) CloseAll() {
 	p.transports.Clear()
 }
 
-func (p *OutboundTransportPool) newReusableOutboundTransport(ob adapter.Outbound, sink MetricsEventSink) *http.Transport {
-	return &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			dialNetwork := transportDialNetwork(p.config, network)
-			conn, err := ob.DialContext(ctx, dialNetwork, M.ParseSocksaddr(addr))
-			if err != nil {
-				return nil, err
-			}
-			if sink != nil {
-				sink.OnConnectionLifecycle(ConnectionOutbound, ConnectionOpen)
-				conn = newCountingConn(conn, sink)
-			}
-			return conn, nil
-		},
+func (p *OutboundTransportPool) newReusableOutboundTransport(
+	ob adapter.Outbound,
+	staticProxyURL string,
+	sink MetricsEventSink,
+) *http.Transport {
+	dialContext := newOutboundDialContext(p.config, ob, sink)
+	transport := &http.Transport{
+		DialContext:         dialContext,
 		DisableKeepAlives:   false,
 		ForceAttemptHTTP2:   true,
 		MaxIdleConns:        p.config.MaxIdleConns,
 		MaxIdleConnsPerHost: p.config.MaxIdleConnsPerHost,
 		IdleConnTimeout:     p.config.IdleConnTimeout,
+	}
+	if staticProxyURL == "" {
+		return transport
+	}
+	proxyURL, err := parseStaticProxyURL(staticProxyURL)
+	if err != nil {
+		transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
+			return nil, err
+		}
+		return transport
+	}
+	switch proxyURL.Scheme {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(proxyURL)
+	case "socks5", "socks5h":
+		transport.DialContext = func(ctx context.Context, _ string, addr string) (net.Conn, error) {
+			return dialSOCKS5StaticProxy(ctx, dialContext, proxyURL, addr)
+		}
+	}
+	return transport
+}
+
+func newOutboundDialContext(
+	cfg OutboundTransportConfig,
+	ob adapter.Outbound,
+	sink MetricsEventSink,
+) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialNetwork := transportDialNetwork(cfg, network)
+		conn, err := ob.DialContext(ctx, dialNetwork, M.ParseSocksaddr(addr))
+		if err != nil {
+			return nil, err
+		}
+		if sink != nil {
+			sink.OnConnectionLifecycle(ConnectionOutbound, ConnectionOpen)
+			conn = newCountingConn(conn, sink)
+		}
+		return conn, nil
 	}
 }
 

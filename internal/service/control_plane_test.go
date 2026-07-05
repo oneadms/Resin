@@ -503,7 +503,8 @@ func TestCreatePlatform_BuildsRoutableViewBeforePublish(t *testing.T) {
 	}
 
 	name := "new-platform"
-	created, err := cp.CreatePlatform(CreatePlatformRequest{Name: &name})
+	staticProxyURL := " socks5h://127.0.0.1:1080 "
+	created, err := cp.CreatePlatform(CreatePlatformRequest{Name: &name, StaticProxyURL: &staticProxyURL})
 	if err != nil {
 		t.Fatalf("CreatePlatform: %v", err)
 	}
@@ -523,6 +524,111 @@ func TestCreatePlatform_BuildsRoutableViewBeforePublish(t *testing.T) {
 	}
 	if plat.PassiveCircuitBreakerDisabled {
 		t.Fatal("runtime platform should default passive circuit breaker to not disabled")
+	}
+	if created.StaticProxyURL != "socks5h://127.0.0.1:1080" {
+		t.Fatalf("created static_proxy_url = %q", created.StaticProxyURL)
+	}
+	if plat.StaticProxyURL != "socks5h://127.0.0.1:1080" {
+		t.Fatalf("runtime static_proxy_url = %q", plat.StaticProxyURL)
+	}
+	stored, err := engine.GetPlatform(created.ID)
+	if err != nil {
+		t.Fatalf("GetPlatform: %v", err)
+	}
+	if stored.StaticProxyURL != "socks5h://127.0.0.1:1080" {
+		t.Fatalf("stored static_proxy_url = %q", stored.StaticProxyURL)
+	}
+}
+
+func TestUpdatePlatform_StaticProxyURLRoundTripAndCallback(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	cacheDir := filepath.Join(dir, "cache")
+
+	engine, closer, err := state.PersistenceBootstrap(stateDir, cacheDir)
+	if err != nil {
+		t.Fatalf("PersistenceBootstrap: %v", err)
+	}
+	t.Cleanup(func() { _ = closer.Close() })
+
+	platformRow := model.Platform{
+		ID:                     "plat-static-proxy",
+		Name:                   "static-proxy",
+		StickyTTLNs:            int64(time.Hour),
+		RegexFilters:           []string{},
+		RegionFilters:          []string{},
+		ReverseProxyMissAction: "TREAT_AS_EMPTY",
+		AllocationPolicy:       "BALANCED",
+		UpdatedAtNs:            time.Now().UnixNano(),
+	}
+	if err := engine.UpsertPlatform(platformRow); err != nil {
+		t.Fatalf("UpsertPlatform: %v", err)
+	}
+
+	pool := topology.NewGlobalNodePool(topology.PoolConfig{
+		SubLookup:              nil,
+		GeoLookup:              func(netip.Addr) string { return "us" },
+		MaxLatencyTableEntries: 16,
+		MaxConsecutiveFailures: func() int { return 3 },
+		LatencyDecayWindow:     func() time.Duration { return 10 * time.Minute },
+	})
+	runtimePlatform, err := platform.BuildFromModel(platformRow)
+	if err != nil {
+		t.Fatalf("BuildFromModel: %v", err)
+	}
+	pool.RegisterPlatform(runtimePlatform)
+
+	var changed []string
+	cp := &ControlPlaneService{
+		Engine: engine,
+		Pool:   pool,
+		EnvCfg: &config.EnvConfig{
+			DefaultPlatformStickyTTL:              time.Hour,
+			DefaultPlatformRegexFilters:           []string{},
+			DefaultPlatformRegionFilters:          []string{},
+			DefaultPlatformReverseProxyMissAction: "TREAT_AS_EMPTY",
+			DefaultPlatformAllocationPolicy:       "BALANCED",
+		},
+		OnPlatformChanged: func(platformID string) {
+			changed = append(changed, platformID)
+		},
+	}
+
+	resp, err := cp.UpdatePlatform(platformRow.ID, []byte(`{"static_proxy_url":"https://proxy.example:8443"}`))
+	if err != nil {
+		t.Fatalf("UpdatePlatform: %v", err)
+	}
+	if resp.StaticProxyURL != "https://proxy.example:8443" {
+		t.Fatalf("response static_proxy_url = %q", resp.StaticProxyURL)
+	}
+	stored, err := engine.GetPlatform(platformRow.ID)
+	if err != nil {
+		t.Fatalf("GetPlatform: %v", err)
+	}
+	if stored.StaticProxyURL != "https://proxy.example:8443" {
+		t.Fatalf("stored static_proxy_url = %q", stored.StaticProxyURL)
+	}
+	plat, ok := pool.GetPlatform(platformRow.ID)
+	if !ok {
+		t.Fatalf("platform %s should remain in pool", platformRow.ID)
+	}
+	if plat.StaticProxyURL != "https://proxy.example:8443" {
+		t.Fatalf("runtime static_proxy_url = %q", plat.StaticProxyURL)
+	}
+	if !reflect.DeepEqual(changed, []string{platformRow.ID}) {
+		t.Fatalf("OnPlatformChanged calls = %v", changed)
+	}
+
+	_, err = cp.UpdatePlatform(platformRow.ID, []byte(`{"static_proxy_url":"ftp://proxy.example:21"}`))
+	if err == nil {
+		t.Fatal("expected invalid static_proxy_url scheme to fail")
+	}
+	var svcErr *ServiceError
+	if !errors.As(err, &svcErr) {
+		t.Fatalf("expected ServiceError, got %T: %v", err, err)
+	}
+	if svcErr.Code != "INVALID_ARGUMENT" {
+		t.Fatalf("service error code = %q, want INVALID_ARGUMENT", svcErr.Code)
 	}
 }
 
@@ -924,6 +1030,7 @@ func TestDeletePlatform_DoesNotDecodeCorruptPersistedFiltersJSON(t *testing.T) {
 		"",
 		platformRow.AllocationPolicy,
 		true,
+		"",
 	))
 
 	cp := &ControlPlaneService{
@@ -963,6 +1070,7 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 		RegionFilters:          []string{"us"},
 		ReverseProxyMissAction: string(platform.ReverseProxyMissActionTreatAsEmpty),
 		AllocationPolicy:       string(platform.AllocationPolicyBalanced),
+		StaticProxyURL:         "http://proxy.example:8080",
 		UpdatedAtNs:            time.Now().UnixNano(),
 	}
 	if err := engine.UpsertPlatform(defaultRow); err != nil {
@@ -987,8 +1095,10 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 		"",
 		defaultRow.AllocationPolicy,
 		true,
+		"",
 	))
 
+	var changed []string
 	cp := &ControlPlaneService{
 		Engine: engine,
 		Pool:   pool,
@@ -998,6 +1108,9 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 			DefaultPlatformRegionFilters:          []string{"jp"},
 			DefaultPlatformReverseProxyMissAction: string(platform.ReverseProxyMissActionReject),
 			DefaultPlatformAllocationPolicy:       string(platform.AllocationPolicyPreferIdleIP),
+		},
+		OnPlatformChanged: func(platformID string) {
+			changed = append(changed, platformID)
 		},
 	}
 
@@ -1026,6 +1139,9 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 	if resp.AllocationPolicy != string(platform.AllocationPolicyPreferIdleIP) {
 		t.Fatalf("response allocation_policy = %q, want %q", resp.AllocationPolicy, platform.AllocationPolicyPreferIdleIP)
 	}
+	if resp.StaticProxyURL != "" {
+		t.Fatalf("response static_proxy_url = %q, want empty", resp.StaticProxyURL)
+	}
 
 	stored, err := engine.GetPlatform(platform.DefaultPlatformID)
 	if err != nil {
@@ -1049,6 +1165,9 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 	if stored.AllocationPolicy != string(platform.AllocationPolicyPreferIdleIP) {
 		t.Fatalf("stored allocation_policy = %q, want %q", stored.AllocationPolicy, platform.AllocationPolicyPreferIdleIP)
 	}
+	if stored.StaticProxyURL != "" {
+		t.Fatalf("stored static_proxy_url = %q, want empty", stored.StaticProxyURL)
+	}
 
 	plat, ok := pool.GetPlatform(platform.DefaultPlatformID)
 	if !ok {
@@ -1071,6 +1190,12 @@ func TestResetPlatformToDefault_SupportsBuiltInDefaultPlatform(t *testing.T) {
 	}
 	if plat.AllocationPolicy != platform.AllocationPolicyPreferIdleIP {
 		t.Fatalf("pool allocation_policy = %q, want %q", plat.AllocationPolicy, platform.AllocationPolicyPreferIdleIP)
+	}
+	if plat.StaticProxyURL != "" {
+		t.Fatalf("pool static_proxy_url = %q, want empty", plat.StaticProxyURL)
+	}
+	if !reflect.DeepEqual(changed, []string{platform.DefaultPlatformID}) {
+		t.Fatalf("OnPlatformChanged calls = %v", changed)
 	}
 }
 
@@ -1129,6 +1254,7 @@ func TestResetPlatformToDefault_DoesNotDecodeCorruptPersistedFiltersJSON(t *test
 		"",
 		platformRow.AllocationPolicy,
 		true,
+		"",
 	))
 
 	cp := &ControlPlaneService{

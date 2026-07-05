@@ -2,13 +2,19 @@ package proxy
 
 import (
 	"github.com/Resinat/Resin/internal/outbound"
+	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/routing"
 	"github.com/sagernet/sing-box/adapter"
 )
 
 type routedOutbound struct {
-	Route    routing.RouteResult
-	Outbound adapter.Outbound
+	Route          routing.RouteResult
+	Outbound       adapter.Outbound
+	StaticProxyURL string
+}
+
+type platformLookup interface {
+	GetPlatform(id string) (*platform.Platform, bool)
 }
 
 func resolveRoutedOutbound(
@@ -31,9 +37,16 @@ func resolveRoutedOutbound(
 	if obPtr == nil {
 		return routedOutbound{}, ErrNoAvailableNodes
 	}
+	staticProxyURL := ""
+	if lookup, ok := pool.(platformLookup); ok {
+		if plat, ok := lookup.GetPlatform(result.PlatformID); ok && plat != nil {
+			staticProxyURL = plat.StaticProxyURL
+		}
+	}
 
 	return routedOutbound{
-		Route:    result,
-		Outbound: *obPtr,
+		Route:          result,
+		Outbound:       *obPtr,
+		StaticProxyURL: staticProxyURL,
 	}, nil
 }

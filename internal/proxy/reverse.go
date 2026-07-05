@@ -107,7 +107,13 @@ func (p *ReverseProxy) outboundHTTPTransport(routed routedOutbound) *http.Transp
 			p.transportPool = NewOutboundTransportPool(p.transportConfig)
 		}
 	})
-	return p.transportPool.Get(routed.Route.NodeHash, routed.Outbound, p.metricsSink)
+	return p.transportPool.Get(
+		routed.Route.PlatformID,
+		routed.Route.NodeHash,
+		routed.StaticProxyURL,
+		routed.Outbound,
+		p.metricsSink,
+	)
 }
 
 func (p *ReverseProxy) directHTTPTransport() *http.Transport {

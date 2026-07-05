@@ -2,6 +2,7 @@ package platform
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -43,6 +44,29 @@ func CompileRegexFilters(regexFilters []string) ([]*regexp.Regexp, error) {
 	return compiled, nil
 }
 
+// NormalizeStaticProxyURL trims and validates a platform-level static proxy URL.
+// An empty value disables static proxying.
+func NormalizeStaticProxyURL(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	u, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("static_proxy_url: invalid URL: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+	default:
+		return "", fmt.Errorf("static_proxy_url: unsupported scheme %q", u.Scheme)
+	}
+	if u.Host == "" || u.Hostname() == "" {
+		return "", fmt.Errorf("static_proxy_url: host is required")
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	return u.String(), nil
+}
+
 // NewConfiguredPlatform builds a runtime platform with non-filter settings applied.
 func NewConfiguredPlatform(
 	id, name string,
@@ -54,6 +78,7 @@ func NewConfiguredPlatform(
 	fixedAccountHeader string,
 	allocationPolicy string,
 	passiveCircuitBreakerDisabled bool,
+	staticProxyURL string,
 ) *Platform {
 	normalizedFixedHeaders, fixedHeaders, err := NormalizeFixedAccountHeaders(fixedAccountHeader)
 	if err != nil {
@@ -68,6 +93,7 @@ func NewConfiguredPlatform(
 	plat.ReverseProxyFixedAccountHeaders = append([]string(nil), fixedHeaders...)
 	plat.AllocationPolicy = ParseAllocationPolicy(allocationPolicy)
 	plat.PassiveCircuitBreakerDisabled = passiveCircuitBreakerDisabled
+	plat.StaticProxyURL = strings.TrimSpace(staticProxyURL)
 	return plat
 }
 
@@ -105,6 +131,10 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode platform %s reverse_proxy_fixed_account_header: %w", mp.ID, err)
 	}
+	staticProxyURL, err := NormalizeStaticProxyURL(mp.StaticProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("decode platform %s %w", mp.ID, err)
+	}
 	if emptyAccountBehavior == string(ReverseProxyEmptyAccountBehaviorFixedHeader) && fixedHeader == "" {
 		return nil, fmt.Errorf(
 			"decode platform %s reverse_proxy_fixed_account_header: required when reverse_proxy_empty_account_behavior is %s",
@@ -124,5 +154,6 @@ func BuildFromModel(mp model.Platform) (*Platform, error) {
 		fixedHeader,
 		mp.AllocationPolicy,
 		mp.PassiveCircuitBreakerDisabled,
+		staticProxyURL,
 	), nil
 }

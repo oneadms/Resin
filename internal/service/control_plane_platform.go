@@ -33,6 +33,7 @@ type PlatformResponse struct {
 	ReverseProxyFixedAccountHeader   string   `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 string   `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    bool     `json:"passive_circuit_breaker_disabled"`
+	StaticProxyURL                   string   `json:"static_proxy_url"`
 	UpdatedAt                        string   `json:"updated_at"`
 }
 
@@ -51,6 +52,7 @@ func platformToResponse(p model.Platform) PlatformResponse {
 		ReverseProxyFixedAccountHeader:   fixedHeader,
 		AllocationPolicy:                 p.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    p.PassiveCircuitBreakerDisabled,
+		StaticProxyURL:                   p.StaticProxyURL,
 		UpdatedAt:                        time.Unix(0, p.UpdatedAtNs).UTC().Format(time.RFC3339Nano),
 	}
 }
@@ -77,6 +79,7 @@ type platformConfig struct {
 	ReverseProxyFixedAccountHeader   string
 	AllocationPolicy                 string
 	PassiveCircuitBreakerDisabled    bool
+	StaticProxyURL                   string
 }
 
 func normalizePlatformMissAction(raw string) string {
@@ -108,6 +111,7 @@ func (s *ControlPlaneService) defaultPlatformConfig(name string) platformConfig 
 			s.EnvCfg.DefaultPlatformReverseProxyFixedAccountHeader,
 		),
 		AllocationPolicy: s.EnvCfg.DefaultPlatformAllocationPolicy,
+		StaticProxyURL:   "",
 	}
 }
 
@@ -122,6 +126,7 @@ func platformConfigFromModel(mp model.Platform) platformConfig {
 		ReverseProxyFixedAccountHeader:   normalizeHeaderFieldName(mp.ReverseProxyFixedAccountHeader),
 		AllocationPolicy:                 mp.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    mp.PassiveCircuitBreakerDisabled,
+		StaticProxyURL:                   mp.StaticProxyURL,
 	}
 }
 
@@ -137,6 +142,7 @@ func (cfg platformConfig) toModel(id string, updatedAtNs int64) model.Platform {
 		ReverseProxyFixedAccountHeader:   cfg.ReverseProxyFixedAccountHeader,
 		AllocationPolicy:                 cfg.AllocationPolicy,
 		PassiveCircuitBreakerDisabled:    cfg.PassiveCircuitBreakerDisabled,
+		StaticProxyURL:                   cfg.StaticProxyURL,
 		UpdatedAtNs:                      updatedAtNs,
 	}
 }
@@ -157,6 +163,7 @@ func (cfg platformConfig) toRuntime(id string) (*platform.Platform, error) {
 		cfg.ReverseProxyFixedAccountHeader,
 		cfg.AllocationPolicy,
 		cfg.PassiveCircuitBreakerDisabled,
+		cfg.StaticProxyURL,
 	), nil
 }
 
@@ -256,6 +263,15 @@ func setPlatformAllocationPolicy(cfg *platformConfig, policy string) *ServiceErr
 	return nil
 }
 
+func setPlatformStaticProxyURL(cfg *platformConfig, raw string) *ServiceError {
+	normalized, err := platform.NormalizeStaticProxyURL(raw)
+	if err != nil {
+		return invalidArg(err.Error())
+	}
+	cfg.StaticProxyURL = normalized
+	return nil
+}
+
 func validatePlatformConfig(cfg *platformConfig, validateRegionFilters bool) *ServiceError {
 	if validateRegionFilters {
 		if err := platform.ValidateRegionFilters(cfg.RegionFilters); err != nil {
@@ -263,6 +279,9 @@ func validatePlatformConfig(cfg *platformConfig, validateRegionFilters bool) *Se
 		}
 	}
 	if err := validatePlatformEmptyAccountConfig(cfg); err != nil {
+		return err
+	}
+	if err := setPlatformStaticProxyURL(cfg, cfg.StaticProxyURL); err != nil {
 		return err
 	}
 	return nil
@@ -335,6 +354,7 @@ type CreatePlatformRequest struct {
 	ReverseProxyFixedAccountHeader   *string  `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 *string  `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    *bool    `json:"passive_circuit_breaker_disabled"`
+	StaticProxyURL                   *string  `json:"static_proxy_url"`
 }
 
 // CreatePlatform creates a new platform.
@@ -391,6 +411,11 @@ func (s *ControlPlaneService) CreatePlatform(req CreatePlatformRequest) (*Platfo
 	}
 	if req.PassiveCircuitBreakerDisabled != nil {
 		cfg.PassiveCircuitBreakerDisabled = *req.PassiveCircuitBreakerDisabled
+	}
+	if req.StaticProxyURL != nil {
+		if err := setPlatformStaticProxyURL(&cfg, *req.StaticProxyURL); err != nil {
+			return nil, err
+		}
 	}
 	if err := validatePlatformConfig(&cfg, true); err != nil {
 		return nil, err
@@ -509,6 +534,13 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 	} else if ok {
 		cfg.PassiveCircuitBreakerDisabled = disabled
 	}
+	if staticProxyURL, ok, err := patch.optionalString("static_proxy_url"); err != nil {
+		return nil, err
+	} else if ok {
+		if err := setPlatformStaticProxyURL(&cfg, staticProxyURL); err != nil {
+			return nil, err
+		}
+	}
 	if err := validatePlatformConfig(&cfg, regionFiltersPatched); err != nil {
 		return nil, err
 	}
@@ -521,6 +553,9 @@ func (s *ControlPlaneService) UpdatePlatform(id string, patchJSON json.RawMessag
 	// Replace in topology pool.
 	if err := s.Pool.ReplacePlatform(plat); err != nil {
 		return nil, internal("replace platform in pool", err)
+	}
+	if s.OnPlatformChanged != nil {
+		s.OnPlatformChanged(id)
 	}
 
 	r := s.withRoutableNodeCount(platformToResponse(mp))
@@ -540,6 +575,9 @@ func (s *ControlPlaneService) DeletePlatform(id string) error {
 		return internal("delete platform", err)
 	}
 	s.Pool.UnregisterPlatform(id)
+	if s.OnPlatformChanged != nil {
+		s.OnPlatformChanged(id)
+	}
 	return nil
 }
 
@@ -561,6 +599,9 @@ func (s *ControlPlaneService) ResetPlatformToDefault(id string) (*PlatformRespon
 
 	if err := s.Pool.ReplacePlatform(plat); err != nil {
 		return nil, internal("replace platform in pool", err)
+	}
+	if s.OnPlatformChanged != nil {
+		s.OnPlatformChanged(id)
 	}
 
 	r := s.withRoutableNodeCount(platformToResponse(mp))

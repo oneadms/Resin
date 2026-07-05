@@ -106,14 +106,17 @@ func TestMigrateStateDB_LegacyBaselineAdvancesToLatest(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddPassiveCircuitBreakerDisabled {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddPassiveCircuitBreakerDisabled)
+	if version != stateVersionAddPlatformStaticProxyURL {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddPlatformStaticProxyURL)
 	}
 	if ok, err := hasTableColumn(db, "subscriptions", "incremental_alive_nodes"); err != nil || !ok {
 		t.Fatalf("expected migrated column subscriptions.incremental_alive_nodes, ok=%v err=%v", ok, err)
 	}
 	if ok, err := hasTableColumn(db, "platforms", "passive_circuit_breaker_disabled"); err != nil || !ok {
 		t.Fatalf("expected migrated column platforms.passive_circuit_breaker_disabled, ok=%v err=%v", ok, err)
+	}
+	if ok, err := hasTableColumn(db, "platforms", "static_proxy_url"); err != nil || !ok {
+		t.Fatalf("expected migrated column platforms.static_proxy_url, ok=%v err=%v", ok, err)
 	}
 }
 
@@ -173,11 +176,14 @@ func TestMigrateStateDB_AddsIncrementalAliveNodesToLegacySubscriptions(t *testin
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddPassiveCircuitBreakerDisabled {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddPassiveCircuitBreakerDisabled)
+	if version != stateVersionAddPlatformStaticProxyURL {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddPlatformStaticProxyURL)
 	}
 	if ok, err := hasTableColumn(db, "platforms", "passive_circuit_breaker_disabled"); err != nil || !ok {
 		t.Fatalf("expected migrated column platforms.passive_circuit_breaker_disabled, ok=%v err=%v", ok, err)
+	}
+	if ok, err := hasTableColumn(db, "platforms", "static_proxy_url"); err != nil || !ok {
+		t.Fatalf("expected migrated column platforms.static_proxy_url, ok=%v err=%v", ok, err)
 	}
 }
 
@@ -248,14 +254,17 @@ func TestMigrateStateDB_NormalizesLegacyRandomMissAction(t *testing.T) {
 	if dirty {
 		t.Fatalf("schema_migrations dirty=true")
 	}
-	if version != stateVersionAddPassiveCircuitBreakerDisabled {
-		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddPassiveCircuitBreakerDisabled)
+	if version != stateVersionAddPlatformStaticProxyURL {
+		t.Fatalf("schema_migrations version: got %d, want %d", version, stateVersionAddPlatformStaticProxyURL)
 	}
 	if ok, err := hasTableColumn(db, "subscriptions", "incremental_alive_nodes"); err != nil || !ok {
 		t.Fatalf("expected migrated column subscriptions.incremental_alive_nodes, ok=%v err=%v", ok, err)
 	}
 	if ok, err := hasTableColumn(db, "platforms", "passive_circuit_breaker_disabled"); err != nil || !ok {
 		t.Fatalf("expected migrated column platforms.passive_circuit_breaker_disabled, ok=%v err=%v", ok, err)
+	}
+	if ok, err := hasTableColumn(db, "platforms", "static_proxy_url"); err != nil || !ok {
+		t.Fatalf("expected migrated column platforms.static_proxy_url, ok=%v err=%v", ok, err)
 	}
 }
 
@@ -318,6 +327,7 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 		RegexFilters: []string{}, RegionFilters: []string{},
 		ReverseProxyMissAction: "TREAT_AS_EMPTY", AllocationPolicy: "BALANCED",
 		PassiveCircuitBreakerDisabled: true,
+		StaticProxyURL:                " socks5h://127.0.0.1:1080 ",
 		UpdatedAtNs:                   now,
 	}
 	if err := repo.UpsertPlatform(p); err != nil {
@@ -341,6 +351,9 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 	if !got.PassiveCircuitBreakerDisabled {
 		t.Fatal("expected passive_circuit_breaker_disabled to round-trip true")
 	}
+	if got.StaticProxyURL != "socks5h://127.0.0.1:1080" {
+		t.Fatalf("static_proxy_url: got %q", got.StaticProxyURL)
+	}
 
 	// List.
 	list, err := repo.ListPlatforms()
@@ -354,6 +367,7 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 	// Idempotent upsert (update same ID).
 	p.Name = "Default-Renamed"
 	p.PassiveCircuitBreakerDisabled = false
+	p.StaticProxyURL = ""
 	if err := repo.UpsertPlatform(p); err != nil {
 		t.Fatal(err)
 	}
@@ -366,6 +380,9 @@ func TestStateRepo_Platforms_CRUD(t *testing.T) {
 	}
 	if list[0].PassiveCircuitBreakerDisabled {
 		t.Fatal("expected passive_circuit_breaker_disabled to update to false")
+	}
+	if list[0].StaticProxyURL != "" {
+		t.Fatalf("expected static_proxy_url to update to empty, got %q", list[0].StaticProxyURL)
 	}
 
 	// Delete.

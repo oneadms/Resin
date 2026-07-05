@@ -25,6 +25,7 @@ const (
 	stateVersionNormalizeMissAction              = 4
 	stateVersionAddIncrementalAliveNodes         = 5
 	stateVersionAddPassiveCircuitBreakerDisabled = 6
+	stateVersionAddPlatformStaticProxyURL        = 7
 	stateLegacyBaselineVersion                   = stateVersionAddFixedAccountHeader
 
 	stateBaseSchemaMigration = stateMigrationsPath + "/000001_state_base.up.sql"
@@ -112,12 +113,18 @@ func prepareLegacyStateBaseline(db *sql.DB, driver migratedb.Driver) error {
 	if err != nil {
 		return err
 	}
+	hasStaticProxyURL, err := hasTableColumn(db, "platforms", "static_proxy_url")
+	if err != nil {
+		return err
+	}
 	hasIncrementalAliveNodes, err := hasTableColumn(db, "subscriptions", "incremental_alive_nodes")
 	if err != nil {
 		return err
 	}
 
 	switch {
+	case hasEmptyBehavior && hasFixedHeader && hasIncrementalAliveNodes && hasPassiveCircuitBreakerDisabled && hasStaticProxyURL:
+		return setLegacyMigrationVersion(db, driver, stateVersionAddPlatformStaticProxyURL)
 	case hasEmptyBehavior && hasFixedHeader && hasIncrementalAliveNodes && hasPassiveCircuitBreakerDisabled:
 		return setLegacyMigrationVersion(db, driver, stateVersionAddPassiveCircuitBreakerDisabled)
 	case hasEmptyBehavior && hasFixedHeader && hasIncrementalAliveNodes:

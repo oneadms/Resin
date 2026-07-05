@@ -12,15 +12,15 @@ import (
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/outbound"
 	"github.com/Resinat/Resin/internal/routing"
-	M "github.com/sagernet/sing/common/metadata"
 )
 
 type tunnelDeps struct {
-	router      *routing.Router
-	pool        outbound.PoolAccessor
-	health      HealthRecorder
-	metricsSink MetricsEventSink
-	bypass      *TargetBypassMatcher
+	router          *routing.Router
+	pool            outbound.PoolAccessor
+	health          HealthRecorder
+	metricsSink     MetricsEventSink
+	transportConfig OutboundTransportConfig
+	bypass          *TargetBypassMatcher
 }
 
 type preparedTunnel struct {
@@ -72,7 +72,14 @@ func prepareConnectTunnel(
 		go deps.health.RecordLatency(nodeHashRaw, domain, nil)
 	}
 
-	rawConn, err := routed.Outbound.DialContext(ctx, "tcp", M.ParseSocksaddr(target))
+	rawConn, err := dialRoutedTarget(
+		ctx,
+		deps.transportConfig,
+		routed.Outbound,
+		target,
+		routed.StaticProxyURL,
+		deps.metricsSink,
+	)
 	if err != nil {
 		proxyErr := classifyConnectError(err)
 		if proxyErr == nil {
@@ -98,13 +105,7 @@ func prepareConnectTunnel(
 		}
 	}
 
-	var upstreamBase net.Conn = rawConn
-	if deps.metricsSink != nil {
-		deps.metricsSink.OnConnectionLifecycle(ConnectionOutbound, ConnectionOpen)
-		upstreamBase = newCountingConn(rawConn, deps.metricsSink)
-	}
-
-	upstreamConn := newTLSLatencyConn(upstreamBase, func(latency time.Duration) {
+	upstreamConn := newTLSLatencyConn(rawConn, func(latency time.Duration) {
 		if deps.health != nil {
 			deps.health.RecordLatency(nodeHashRaw, domain, &latency)
 		}

@@ -27,8 +27,8 @@ func TestOutboundTransportPool_ReusesByNodeHash(t *testing.T) {
 	pool := newOutboundTransportPool()
 	hash := node.Hash{1}
 
-	t1 := pool.Get(hash, &noopOutbound{}, nil)
-	t2 := pool.Get(hash, &noopOutbound{}, nil)
+	t1 := pool.Get("platform-1", hash, "", &noopOutbound{}, nil)
+	t2 := pool.Get("platform-1", hash, "", &noopOutbound{}, nil)
 
 	if t1 != t2 {
 		t.Fatal("expected same transport instance for identical node hash")
@@ -41,10 +41,34 @@ func TestOutboundTransportPool_SplitsByNodeHash(t *testing.T) {
 	hash1 := node.Hash{1}
 	hash2 := node.Hash{2}
 
-	base := pool.Get(hash1, ob, nil)
-	byNodeHash := pool.Get(hash2, ob, nil)
+	base := pool.Get("platform-1", hash1, "", ob, nil)
+	byNodeHash := pool.Get("platform-1", hash2, "", ob, nil)
 	if base == byNodeHash {
 		t.Fatal("expected different transport for different node hash")
+	}
+}
+
+func TestOutboundTransportPool_SplitsByPlatformID(t *testing.T) {
+	pool := newOutboundTransportPool()
+	ob := &noopOutbound{}
+	hash := node.Hash{1}
+
+	base := pool.Get("platform-1", hash, "", ob, nil)
+	byPlatform := pool.Get("platform-2", hash, "", ob, nil)
+	if base == byPlatform {
+		t.Fatal("expected different transport for different platform id")
+	}
+}
+
+func TestOutboundTransportPool_SplitsByStaticProxyURL(t *testing.T) {
+	pool := newOutboundTransportPool()
+	ob := &noopOutbound{}
+	hash := node.Hash{1}
+
+	base := pool.Get("platform-1", hash, "http://proxy-a.example:8080", ob, nil)
+	byProxy := pool.Get("platform-1", hash, "http://proxy-b.example:8080", ob, nil)
+	if base == byProxy {
+		t.Fatal("expected different transport for different static proxy URL")
 	}
 }
 
@@ -53,7 +77,7 @@ func TestOutboundTransportPool_UsesKeepAliveTransport(t *testing.T) {
 	ob := &noopOutbound{}
 	hash := node.Hash{1}
 
-	transport := pool.Get(hash, ob, nil)
+	transport := pool.Get("platform-1", hash, "", ob, nil)
 	if transport.DisableKeepAlives {
 		t.Fatal("expected keep-alive enabled transport")
 	}
@@ -64,12 +88,31 @@ func TestOutboundTransportPool_EvictRemovesNodeTransport(t *testing.T) {
 	hash := node.Hash{1}
 	ob := &noopOutbound{}
 
-	t1 := pool.Get(hash, ob, nil)
+	t1 := pool.Get("platform-1", hash, "", ob, nil)
 	pool.Evict(hash)
-	t2 := pool.Get(hash, ob, nil)
+	t2 := pool.Get("platform-1", hash, "", ob, nil)
 
 	if t1 == t2 {
 		t.Fatal("expected a new transport after evict")
+	}
+}
+
+func TestOutboundTransportPool_EvictPlatformRemovesPlatformTransports(t *testing.T) {
+	pool := newOutboundTransportPool()
+	hash := node.Hash{1}
+	ob := &noopOutbound{}
+
+	platform1 := pool.Get("platform-1", hash, "", ob, nil)
+	platform2 := pool.Get("platform-2", hash, "", ob, nil)
+	pool.EvictPlatform("platform-1")
+
+	nextPlatform1 := pool.Get("platform-1", hash, "", ob, nil)
+	nextPlatform2 := pool.Get("platform-2", hash, "", ob, nil)
+	if platform1 == nextPlatform1 {
+		t.Fatal("expected platform-1 transport to be evicted")
+	}
+	if platform2 != nextPlatform2 {
+		t.Fatal("expected platform-2 transport to remain cached")
 	}
 }
 
@@ -82,7 +125,7 @@ func TestOutboundTransportPool_AppliesConfiguredLimits(t *testing.T) {
 	ob := &noopOutbound{}
 	hash := node.Hash{1}
 
-	transport := pool.Get(hash, ob, nil)
+	transport := pool.Get("platform-1", hash, "", ob, nil)
 	if transport.MaxIdleConns != 9 {
 		t.Fatalf("MaxIdleConns: got %d, want %d", transport.MaxIdleConns, 9)
 	}
@@ -109,7 +152,7 @@ func TestOutboundTransportPool_DialNetworkUsesConfig(t *testing.T) {
 	pool := newOutboundTransportPoolWithConfig(OutboundTransportConfig{
 		DialNetwork: func() string { return "tcp4" },
 	})
-	transport := pool.Get(node.Hash{1}, ob, nil)
+	transport := pool.Get("platform-1", node.Hash{1}, "", ob, nil)
 
 	_, _ = transport.DialContext(context.Background(), "tcp", "example.com:443")
 
@@ -124,7 +167,7 @@ func TestOutboundTransportPool_DialNetworkReadsLatestValue(t *testing.T) {
 	pool := newOutboundTransportPoolWithConfig(OutboundTransportConfig{
 		DialNetwork: func() string { return network },
 	})
-	transport := pool.Get(node.Hash{1}, ob, nil)
+	transport := pool.Get("platform-1", node.Hash{1}, "", ob, nil)
 
 	_, _ = transport.DialContext(context.Background(), "tcp", "example.com:443")
 	network = "tcp4"
@@ -147,12 +190,12 @@ func TestOutboundTransportPool_CloseAllClearsEntries(t *testing.T) {
 
 	hashA := node.Hash{1}
 	hashB := node.Hash{2}
-	t1 := pool.Get(hashA, ob, nil)
-	_ = pool.Get(hashB, ob, nil)
+	t1 := pool.Get("platform-1", hashA, "", ob, nil)
+	_ = pool.Get("platform-1", hashB, "", ob, nil)
 
 	pool.CloseAll()
 
-	t2 := pool.Get(hashA, ob, nil)
+	t2 := pool.Get("platform-1", hashA, "", ob, nil)
 	if t1 == t2 {
 		t.Fatal("expected a new transport after CloseAll")
 	}

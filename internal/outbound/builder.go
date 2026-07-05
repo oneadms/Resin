@@ -40,6 +40,7 @@ type SingboxBuilderConfig struct {
 // outbound servers can be resolved.
 type SingboxBuilder struct {
 	registry            *sbOutbound.Registry
+	outboundManager     *sbOutbound.Manager
 	ctx                 context.Context
 	logFactory          log.Factory
 	dnsTransportManager *dns.TransportManager
@@ -118,6 +119,7 @@ func NewSingboxBuilderWithConfig(cfg SingboxBuilderConfig) (*SingboxBuilder, err
 
 	return &SingboxBuilder{
 		registry:            registry,
+		outboundManager:     outboundMgr,
 		ctx:                 ctx,
 		logFactory:          logFactory,
 		dnsTransportManager: dnsTransportMgr,
@@ -138,27 +140,65 @@ func (b *SingboxBuilder) Build(rawOptions json.RawMessage) (adapter.Outbound, er
 
 	// 2. Create the outbound instance via the registry.
 	logger := b.logFactory.NewLogger("outbound/" + outboundConfig.Type)
-	ob, err := b.registry.CreateOutbound(
-		b.ctx,
-		nil, // router — not needed for simple dialing
-		logger,
-		outboundConfig.Tag,
-		outboundConfig.Type,
-		outboundConfig.Options,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create outbound [%s]: %w", outboundConfig.Type, err)
+	var ob adapter.Outbound
+	if b.outboundManager != nil && outboundConfig.Tag != "" {
+		if err := b.outboundManager.Create(
+			b.ctx,
+			nil, // router — not needed for simple dialing
+			logger,
+			outboundConfig.Tag,
+			outboundConfig.Type,
+			outboundConfig.Options,
+		); err != nil {
+			return nil, fmt.Errorf("create outbound [%s]: %w", outboundConfig.Type, err)
+		}
+		registered, ok := b.outboundManager.Outbound(outboundConfig.Tag)
+		if !ok {
+			return nil, fmt.Errorf("create outbound [%s]: registered outbound %q not found", outboundConfig.Type, outboundConfig.Tag)
+		}
+		ob = registered
+	} else {
+		var err error
+		ob, err = b.registry.CreateOutbound(
+			b.ctx,
+			nil, // router — not needed for simple dialing
+			logger,
+			outboundConfig.Tag,
+			outboundConfig.Type,
+			outboundConfig.Options,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create outbound [%s]: %w", outboundConfig.Type, err)
+		}
 	}
 
 	// 3. Run lifecycle start stages. On failure, close and return error.
 	for _, stage := range adapter.ListStartStages {
 		if err := adapter.LegacyStart(ob, stage); err != nil {
 			_ = common.Close(ob)
+			if b.outboundManager != nil && outboundConfig.Tag != "" {
+				_ = b.outboundManager.Remove(outboundConfig.Tag)
+			}
 			return nil, fmt.Errorf("outbound start %s [%s]: %w", stage, outboundConfig.Type, err)
 		}
 	}
 
 	return ob, nil
+}
+
+// Remove unregisters a previously built outbound tag from sing-box's manager.
+func (b *SingboxBuilder) Remove(rawOptions json.RawMessage) {
+	if b == nil || b.outboundManager == nil {
+		return
+	}
+	var outboundConfig option.Outbound
+	if err := sJson.UnmarshalContext(b.ctx, rawOptions, &outboundConfig); err != nil {
+		return
+	}
+	if outboundConfig.Tag == "" {
+		return
+	}
+	_ = b.outboundManager.Remove(outboundConfig.Tag)
 }
 
 // Close shuts down the builder's internal DNS services.

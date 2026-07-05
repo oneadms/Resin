@@ -15,6 +15,7 @@ type Platform struct {
 	ReverseProxyFixedAccountHeader   string `json:"reverse_proxy_fixed_account_header"`
 	AllocationPolicy                 string `json:"allocation_policy"`
 	PassiveCircuitBreakerDisabled    bool   `json:"passive_circuit_breaker_disabled"`
+	StaticProxyURL                   string `json:"static_proxy_url"`
 	UpdatedAtNs                      int64  `json:"updated_at_ns"`
 }
 

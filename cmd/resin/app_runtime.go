@@ -388,6 +388,15 @@ func (a *resinApp) closeReverseProxyIdleConnectionsOnIPVersionChange(oldCfg, new
 	}
 }
 
+func (a *resinApp) evictPlatformTransports(platformID string) {
+	if a.forwardTransportPool != nil {
+		a.forwardTransportPool.EvictPlatform(platformID)
+	}
+	if a.reverseTransportPool != nil {
+		a.reverseTransportPool.EvictPlatform(platformID)
+	}
+}
+
 func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 	startedAt := time.Now().UTC()
 	systemInfo := service.SystemInfo{
@@ -409,6 +418,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		GeoIP:                  a.geoSvc,
 		MatcherRuntime:         a.accountMatcher,
 		OnRuntimeConfigUpdated: a.closeReverseProxyIdleConnectionsOnIPVersionChange,
+		OnPlatformChanged:      a.evictPlatformTransports,
 	}
 
 	apiSrv := api.NewServerWithAddress(
@@ -473,14 +483,15 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 	})
 	a.reverseProxy = reverseProxy
 	socks5Inbound := proxy.NewSocks5Inbound(proxy.Socks5InboundConfig{
-		ProxyToken:       a.envCfg.ProxyToken,
-		AuthVersion:      string(a.envCfg.AuthVersion),
-		Router:           a.topoRuntime.router,
-		Pool:             a.topoRuntime.pool,
-		Health:           a.topoRuntime.pool,
-		Events:           proxyEvents,
-		MetricsSink:      a.metricsManager,
-		ProxyBypassRules: a.envCfg.ProxyBypassRules,
+		ProxyToken:        a.envCfg.ProxyToken,
+		AuthVersion:       string(a.envCfg.AuthVersion),
+		Router:            a.topoRuntime.router,
+		Pool:              a.topoRuntime.pool,
+		Health:            a.topoRuntime.pool,
+		Events:            proxyEvents,
+		MetricsSink:       a.metricsManager,
+		OutboundTransport: outboundTransportCfg,
+		ProxyBypassRules:  a.envCfg.ProxyBypassRules,
 	})
 
 	inboundHandler := newInboundMux(

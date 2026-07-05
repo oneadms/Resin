@@ -30,6 +30,7 @@ import {
   defaultPlatformFormValues,
   platformFormSchema,
   platformNameRuleHint,
+  staticProxyURLRuleHint,
   toPlatformCreateInput,
   type PlatformFormValues,
 } from "./formModel";
@@ -178,6 +179,7 @@ export function PlatformPage() {
             const regionCount = platform.region_filters.length;
             const regexCount = platform.regex_filters.length;
             const stickyTTL = formatGoDuration(platform.sticky_ttl, t("默认"));
+            const staticProxyEnabled = platform.static_proxy_url.trim().length > 0;
 
             return (
               <button
@@ -204,6 +206,10 @@ export function PlatformPage() {
                   <span className="platform-fact">
                     <span>{t("租约时长")}</span>
                     <strong>{stickyTTL}</strong>
+                  </span>
+                  <span className="platform-fact">
+                    <span>{t("静态代理")}</span>
+                    <strong>{staticProxyEnabled ? t("已启用") : t("未启用")}</strong>
                   </span>
                 </div>
                 <div className="platform-tile-foot">
@@ -259,6 +265,24 @@ export function PlatformPage() {
                   {t("租约保持时长（可选）")}
                 </label>
                 <Input id="create-sticky" placeholder={t("例如 168h")} {...createForm.register("sticky_ttl")} />
+              </div>
+
+              <div className="field-group">
+                <label className="field-label" htmlFor="create-static-proxy-url">
+                  {t("静态代理 URL（可选）")}
+                </label>
+                <Input
+                  id="create-static-proxy-url"
+                  placeholder={t("例如 socks5h://127.0.0.1:1080")}
+                  invalid={Boolean(createForm.formState.errors.static_proxy_url)}
+                  {...createForm.register("static_proxy_url")}
+                />
+                {createForm.formState.errors.static_proxy_url?.message ? (
+                  <p className="field-error">{t(createForm.formState.errors.static_proxy_url.message)}</p>
+                ) : null}
+                <p className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                  {t(staticProxyURLRuleHint)}
+                </p>
               </div>
 
               <div className="field-group">
