@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Resinat/Resin/internal/node"
-	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/subscription"
 	"github.com/Resinat/Resin/internal/testutil"
 	"github.com/Resinat/Resin/internal/topology"
@@ -359,91 +358,6 @@ func TestProbeBandwidthSync_UsesLargePartialSampleOnTimeout(t *testing.T) {
 	if result.UploadMbps != 2.048 {
 		t.Fatalf("UploadMbps = %v, want 2.048", result.UploadMbps)
 	}
-}
-
-func TestScanBandwidth_DiscoversOnlyRoutableUnknownBandwidth(t *testing.T) {
-	pool := topology.NewGlobalNodePool(topology.PoolConfig{
-		MaxLatencyTableEntries: 16,
-		MaxConsecutiveFailures: func() int { return 3 },
-	})
-	plat := platform.NewPlatform("plat-bandwidth-discovery", "BandwidthDiscovery", nil, nil)
-	pool.RegisterPlatform(plat)
-
-	routableHash := addBandwidthScanNode(t, pool, `{"type":"bandwidth-discover-routable"}`, "198.51.100.10", true)
-	_ = addBandwidthScanNode(t, pool, `{"type":"bandwidth-discover-unroutable"}`, "", true)
-	freshHash := addBandwidthScanNode(t, pool, `{"type":"bandwidth-discover-fresh"}`, "198.51.100.11", true)
-	freshEntry, ok := pool.GetEntry(freshHash)
-	if !ok {
-		t.Fatal("fresh entry not found")
-	}
-	freshEntry.LastBandwidthProbeAttempt.Store(time.Now().UnixNano())
-
-	pool.RebuildPlatform(plat)
-	mgr := NewProbeManager(ProbeConfig{Pool: pool})
-	mgr.scanBandwidth()
-
-	tasks := queuedNormalProbeTasks(mgr)
-	if len(tasks) != 1 {
-		t.Fatalf("queued bandwidth tasks = %d, want 1", len(tasks))
-	}
-	if tasks[0].key.hash != routableHash || tasks[0].key.kind != probeTaskKindBandwidth {
-		t.Fatalf("unexpected queued task: %+v, want bandwidth for %s", tasks[0].key, routableHash.Hex())
-	}
-}
-
-func TestScanBandwidth_CapsUnknownBandwidthDiscovery(t *testing.T) {
-	pool := topology.NewGlobalNodePool(topology.PoolConfig{
-		MaxLatencyTableEntries: 16,
-		MaxConsecutiveFailures: func() int { return 3 },
-	})
-	plat := platform.NewPlatform("plat-bandwidth-discovery-cap", "BandwidthDiscoveryCap", nil, nil)
-	pool.RegisterPlatform(plat)
-
-	for i := 0; i < bandwidthDiscoveryLimit+3; i++ {
-		raw := `{"type":"bandwidth-discover-cap","n":"` + string(rune('a'+i)) + `"}`
-		addBandwidthScanNode(t, pool, raw, "198.51.100.20", true)
-	}
-	pool.RebuildPlatform(plat)
-
-	mgr := NewProbeManager(ProbeConfig{Pool: pool})
-	mgr.scanBandwidth()
-
-	tasks := queuedNormalProbeTasks(mgr)
-	if len(tasks) != bandwidthDiscoveryLimit {
-		t.Fatalf("queued bandwidth discovery tasks = %d, want %d", len(tasks), bandwidthDiscoveryLimit)
-	}
-	for _, task := range tasks {
-		if task.key.kind != probeTaskKindBandwidth {
-			t.Fatalf("queued non-bandwidth task: %+v", task.key)
-		}
-	}
-}
-
-func addBandwidthScanNode(t *testing.T, pool *topology.GlobalNodePool, raw string, egressIP string, withOutbound bool) node.Hash {
-	t.Helper()
-	hash := node.HashFromRawOptions([]byte(raw))
-	pool.AddNodeFromSub(hash, []byte(raw), "sub1")
-	entry, ok := pool.GetEntry(hash)
-	if !ok {
-		t.Fatalf("entry not found for %s", hash.Hex())
-	}
-	if withOutbound {
-		storeOutbound(entry)
-	}
-	pool.RecordResult(hash, true)
-	if egressIP != "" {
-		entry.SetEgressIP(netip.MustParseAddr(egressIP))
-	}
-	if entry.LatencyTable != nil {
-		entry.LatencyTable.Update("cloudflare.com", 50*time.Millisecond, time.Minute)
-	}
-	return hash
-}
-
-func queuedNormalProbeTasks(mgr *ProbeManager) []probeTask {
-	mgr.taskQueue.mu.Lock()
-	defer mgr.taskQueue.mu.Unlock()
-	return append([]probeTask(nil), mgr.taskQueue.normal.items[mgr.taskQueue.normal.head:]...)
 }
 
 // TestProbeEgress_ZeroLatencyIgnored verifies that a successful probe with a

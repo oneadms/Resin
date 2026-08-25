@@ -12,7 +12,6 @@ import (
 
 	"github.com/Resinat/Resin/internal/netutil"
 	"github.com/Resinat/Resin/internal/node"
-	"github.com/Resinat/Resin/internal/platform"
 	"github.com/Resinat/Resin/internal/scanloop"
 	"github.com/Resinat/Resin/internal/topology"
 	"github.com/puzpuzpuz/xsync/v4"
@@ -90,8 +89,6 @@ const (
 	defaultBandwidthTestBytes int64 = 5_000_000
 	minPartialBandwidthBytes  int64 = 256_000
 	minPartialBandwidthTime         = 500 * time.Millisecond
-	bandwidthRefreshInterval        = 24 * time.Hour
-	bandwidthDiscoveryLimit         = 8
 	defaultQueueCap                 = 1024
 )
 
@@ -411,12 +408,6 @@ func (m *ProbeManager) Start() {
 		scanloop.Run(m.stopCh, scanloop.DefaultMinInterval, scanloop.DefaultJitterRange, m.scanLatency)
 	}()
 
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		scanloop.Run(m.stopCh, scanloop.DefaultMinInterval, scanloop.DefaultJitterRange, m.scanBandwidth)
-	}()
-
 	for i := 0; i < m.workerCount; i++ {
 		m.wg.Add(1)
 		go func() {
@@ -453,7 +444,9 @@ func (m *ProbeManager) TriggerImmediateLatencyProbe(hash node.Hash) {
 	m.enqueueProbe(hash, probeTaskKindLatency, probePriorityNormal)
 }
 
-// TriggerImmediateBandwidthProbe enqueues an async bandwidth probe for a node.
+// TriggerImmediateBandwidthProbe enqueues an explicit async bandwidth probe for
+// a node. Bandwidth probes are intentionally opt-in; Start does not schedule
+// them periodically because the test traffic competes with user traffic.
 func (m *ProbeManager) TriggerImmediateBandwidthProbe(hash node.Hash) {
 	m.enqueueProbe(hash, probeTaskKindBandwidth, probePriorityNormal)
 }
@@ -644,56 +637,6 @@ func (m *ProbeManager) scanLatency() {
 
 		return true
 	})
-}
-
-// scanBandwidth refreshes established bandwidth samples and slowly discovers
-// bandwidth for routable nodes that do not have a sample yet.
-func (m *ProbeManager) scanBandwidth() {
-	now := time.Now()
-	const lookahead = 15 * time.Second
-	discovered := 0
-
-	m.pool.Range(func(h node.Hash, entry *node.NodeEntry) bool {
-		select {
-		case <-m.stopCh:
-			return false
-		default:
-		}
-		if m.pool.IsNodeDisabled(h) || entry.Outbound.Load() == nil {
-			return true
-		}
-		lastAttempt := entry.LastBandwidthProbeAttempt.Load()
-		if lastAttempt <= 0 {
-			if discovered >= bandwidthDiscoveryLimit || !m.isRoutableByAnyPlatform(h) {
-				return true
-			}
-			if m.enqueueProbe(h, probeTaskKindBandwidth, probePriorityNormal) {
-				discovered++
-			}
-			return true
-		}
-		nextDue := time.Unix(0, lastAttempt).Add(bandwidthRefreshInterval).Add(-lookahead)
-		if now.Before(nextDue) {
-			return true
-		}
-		m.enqueueProbe(h, probeTaskKindBandwidth, probePriorityNormal)
-		return true
-	})
-}
-
-func (m *ProbeManager) isRoutableByAnyPlatform(hash node.Hash) bool {
-	if m == nil || m.pool == nil {
-		return false
-	}
-	routable := false
-	m.pool.RangePlatforms(func(plat *platform.Platform) bool {
-		if plat != nil && plat.View().Contains(hash) {
-			routable = true
-			return false
-		}
-		return true
-	})
-	return routable
 }
 
 func (m *ProbeManager) runProbeWorker() {
