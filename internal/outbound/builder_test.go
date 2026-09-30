@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Resinat/Resin/internal/config"
 	"github.com/Resinat/Resin/internal/testutil"
@@ -281,9 +282,35 @@ func TestSecureDNSTransportSpecsForUpstreams_InvalidURI(t *testing.T) {
 	}
 }
 
-func TestSecureDNSFailoverTransport_FirstSuccessSkipsFallbacks(t *testing.T) {
-	first := newStaticDNSTransport("first", successDNSResponse("first.example."))
-	second := newStaticDNSTransport("second", successDNSResponse("second.example."))
+func TestSecureDNSFailoverTransport_FirstSuccessStopsWaiting(t *testing.T) {
+	first := newBlockingDNSTransport("first", successDNSResponse("first.example."))
+	second := newBlockingDNSTransport("second", successDNSResponse("second.example."))
+	manager := &stubDNSTransportManager{
+		transports: map[string]adapter.DNSTransport{
+			"first":  first,
+			"second": second,
+		},
+	}
+	transport := &secureDNSFailoverTransport{
+		manager:      manager,
+		tag:          secureDNSFailoverTransportTag,
+		upstreamTags: []string{"first", "second"},
+	}
+	first.releaseOnce()
+
+	resp, err := transport.Exchange(context.Background(), dnsQuestion("example.com."))
+	if err != nil {
+		t.Fatalf("Exchange() error: %v", err)
+	}
+	if len(resp.Answer) == 0 {
+		t.Fatal("expected DNS answer")
+	}
+	defer second.releaseOnce()
+}
+
+func TestSecureDNSFailoverTransport_QueriesUpstreamsConcurrently(t *testing.T) {
+	first := newBlockingDNSTransport("first", successDNSResponse("first.example."))
+	second := newBlockingDNSTransport("second", successDNSResponse("second.example."))
 	manager := &stubDNSTransportManager{
 		transports: map[string]adapter.DNSTransport{
 			"first":  first,
@@ -296,18 +323,35 @@ func TestSecureDNSFailoverTransport_FirstSuccessSkipsFallbacks(t *testing.T) {
 		upstreamTags: []string{"first", "second"},
 	}
 
-	resp, err := transport.Exchange(context.Background(), dnsQuestion("example.com."))
-	if err != nil {
-		t.Fatalf("Exchange() error: %v", err)
+	type exchangeResult struct {
+		response *mDNS.Msg
+		err      error
 	}
-	if len(resp.Answer) == 0 {
-		t.Fatal("expected DNS answer")
+	resultCh := make(chan exchangeResult, 1)
+	go func() {
+		response, err := transport.Exchange(context.Background(), dnsQuestion("example.com."))
+		resultCh <- exchangeResult{response, err}
+	}()
+
+	first.waitStarted()
+	second.waitStarted()
+	first.releaseOnce()
+
+	select {
+	case result := <-resultCh:
+		if result.err != nil {
+			t.Fatalf("Exchange() error: %v", result.err)
+		}
+		if result.response == nil || result.response.Rcode != mDNS.RcodeSuccess {
+			t.Fatalf("Exchange() response: got %+v", result.response)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Exchange() did not return after one upstream succeeded")
 	}
-	if first.calls.Load() != 1 {
-		t.Fatalf("first transport calls: got %d, want 1", first.calls.Load())
-	}
-	if second.calls.Load() != 0 {
-		t.Fatalf("second transport calls: got %d, want 0", second.calls.Load())
+
+	second.releaseOnce()
+	if second.calls.Load() == 0 {
+		t.Fatal("expected both upstream queries to start before one was released")
 	}
 }
 
@@ -634,6 +678,55 @@ func TestSingboxBuilder_ParseDomainServerProtocols(t *testing.T) {
 	}
 }
 
+func TestSingboxBuilder_AnyTLSDisablesTCPFastOpen(t *testing.T) {
+	b := newTestSingboxBuilder(t)
+	defer b.Close()
+
+	raw := json.RawMessage(`{
+		"type":"anytls",
+		"tag":"test-anytls-tfo",
+		"server":"127.0.0.1",
+		"server_port":443,
+		"password":"password",
+		"tcp_fast_open":true,
+		"tls":{"enabled":true,"insecure":true,"server_name":"example.com"}
+	}`)
+
+	ob, err := b.Build(raw)
+	if err != nil {
+		t.Fatalf("Build(anytls with tcp_fast_open) error: %v", err)
+	}
+	if closer, ok := ob.(io.Closer); ok {
+		if err := closer.Close(); err != nil {
+			t.Fatalf("Close(anytls with tcp_fast_open) error: %v", err)
+		}
+	}
+}
+
+func TestNormalizeOutboundOptions_ReplacesUnsupportedUTLSFingerprint(t *testing.T) {
+	config := option.Outbound{
+		Type: "hysteria2",
+		Options: &option.Hysteria2OutboundOptions{
+			OutboundTLSOptionsContainer: option.OutboundTLSOptionsContainer{
+				TLS: &option.OutboundTLSOptions{
+					Enabled: true,
+					UTLS: &option.OutboundUTLSOptions{
+						Enabled:     true,
+						Fingerprint: "1d7995901a93bada6d17f10289441793e8ec54ee314d9f04f3a9d05daa622331",
+					},
+				},
+			},
+		},
+	}
+
+	normalizeOutboundOptions(&config)
+
+	options := config.Options.(*option.Hysteria2OutboundOptions)
+	if got := options.TLS.UTLS.Fingerprint; got != "chrome" {
+		t.Fatalf("fingerprint: got %q, want chrome", got)
+	}
+}
+
 func TestSingboxBuilder_UnknownType(t *testing.T) {
 	b := newTestSingboxBuilder(t)
 	defer b.Close()
@@ -674,6 +767,47 @@ type staticDNSTransport struct {
 	response *mDNS.Msg
 	err      error
 	calls    atomic.Int32
+}
+
+type blockingDNSTransport struct {
+	staticDNSTransport
+	started   chan struct{}
+	startOnce sync.Once
+	released  chan struct{}
+}
+
+func newBlockingDNSTransport(tag string, response *mDNS.Msg) *blockingDNSTransport {
+	return &blockingDNSTransport{
+		staticDNSTransport: staticDNSTransport{tag: tag, response: response},
+		started:            make(chan struct{}),
+		released:           make(chan struct{}),
+	}
+}
+
+func (t *blockingDNSTransport) Exchange(ctx context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
+	t.calls.Add(1)
+	t.startOnce.Do(func() { close(t.started) })
+	select {
+	case <-t.released:
+		if t.err != nil {
+			return nil, t.err
+		}
+		return t.response.Copy(), nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (t *blockingDNSTransport) waitStarted() {
+	<-t.started
+}
+
+func (t *blockingDNSTransport) releaseOnce() {
+	select {
+	case <-t.released:
+	default:
+		close(t.released)
+	}
 }
 
 func newStaticDNSTransport(tag string, response *mDNS.Msg) *staticDNSTransport {

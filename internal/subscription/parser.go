@@ -1301,10 +1301,8 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 			tls["alpn"] = alpn
 		}
 		applyUTLSFromValue(tls, firstNonEmpty(
-			getString(proxy, "fingerprint"),
 			getString(proxy, "client-fingerprint"),
 			getString(proxy, "client_fingerprint"),
-			getString(proxy, "fp"),
 		))
 		applyTLSCertificateFromClash(tls, proxy)
 		outbound := map[string]any{
@@ -1461,10 +1459,8 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 		insecure, _ := getBool(proxy, "skip-cert-verify", "allowInsecure", "insecure")
 		tls := newClashEnabledTLS(sni, insecure, getStringSlice(proxy, "alpn"))
 		applyUTLSFromValue(tls, firstNonEmpty(
-			getString(proxy, "fingerprint"),
 			getString(proxy, "client-fingerprint"),
 			getString(proxy, "client_fingerprint"),
-			getString(proxy, "fp"),
 		))
 		applyTLSCertificateFromClash(tls, proxy)
 		outbound := map[string]any{
@@ -1582,6 +1578,9 @@ func convertClashProxyToNode(proxy map[string]any) (ParsedNode, bool) {
 			outbound["min_idle_session"] = minIdle
 		}
 		applyClashDialFields(outbound, proxy)
+		// sing-box rejects TCP Fast Open for AnyTLS because AnyTLS needs a
+		// connected remote address before the first write completes.
+		delete(outbound, "tcp_fast_open")
 		return buildParsedNode(outbound)
 	case "ssh":
 		outbound := map[string]any{

@@ -373,6 +373,7 @@ func TestParseGeneralSubscription_ClashJSON_NewProtocolsAndDialFields(t *testing
 				"idle-session-check-interval": 30,
 				"idle-session-timeout": 40,
 				"min-idle-session": 2,
+				"fast-open": true,
 				"sni": "example.com",
 				"skip-cert-verify": true,
 				"alpn": ["h2", "http/1.1"],
@@ -536,6 +537,9 @@ func TestParseGeneralSubscription_ClashJSON_NewProtocolsAndDialFields(t *testing
 	}
 	if got := anytls["min_idle_session"]; got != float64(2) {
 		t.Fatalf("anytls min_idle_session: got %v", got)
+	}
+	if _, exists := anytls["tcp_fast_open"]; exists {
+		t.Fatal("anytls tcp_fast_open should be omitted")
 	}
 	anyTLSTLS := mustMapField(t, anytls, "tls")
 	utls := mustMapField(t, anyTLSTLS, "utls")
@@ -820,7 +824,7 @@ func TestParseGeneralSubscription_ClashJSON_HysteriaAdvancedFields(t *testing.T)
 				"auth-str": "token",
 				"up": "30",
 				"down": "100",
-				"fingerprint": "chrome",
+				"client-fingerprint": "chrome",
 				"ca": "/etc/ssl/certs/custom.pem",
 				"ca-str": "-----BEGIN CERTIFICATE-----ABC",
 				"hop-interval": 15
@@ -988,7 +992,8 @@ func TestParseGeneralSubscription_ClashJSON_Hysteria2AdvancedFields(t *testing.T
 				"obfs": "salamander",
 				"obfs-password": "obfs-secret",
 				"hop-interval": 12,
-				"fingerprint": "firefox",
+				"fingerprint": "1d7995901a93bada6d17f10289441793e8ec54ee314d9f04f3a9d05daa622331",
+				"client-fingerprint": "firefox",
 				"ca": "/etc/ssl/certs/hy2.pem",
 				"ca-str": "-----BEGIN CERTIFICATE-----XYZ"
 			}
@@ -1038,6 +1043,35 @@ func TestParseGeneralSubscription_ClashJSON_Hysteria2AdvancedFields(t *testing.T
 	utls := mustMapField(t, tls, "utls")
 	if got := utls["fingerprint"]; got != "firefox" {
 		t.Fatalf("tls.utls.fingerprint: got %v", got)
+	}
+}
+
+func TestParseGeneralSubscription_ClashJSON_Hysteria2CertificateFingerprintIsNotUTLS(t *testing.T) {
+	data := []byte(`{
+		"proxies": [
+			{
+				"name": "hy2-certificate-pin",
+				"type": "hysteria2",
+				"server": "hy2.example.com",
+				"port": 443,
+				"password": "password",
+				"fingerprint": "1d7995901a93bada6d17f10289441793e8ec54ee314d9f04f3a9d05daa622331"
+			}
+		]
+	}`)
+
+	nodes, err := ParseGeneralSubscription(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 parsed node, got %d", len(nodes))
+	}
+
+	obj := parseNodeRaw(t, nodes[0].RawOptions)
+	tls := mustMapField(t, obj, "tls")
+	if _, exists := tls["utls"]; exists {
+		t.Fatal("certificate fingerprint should not be imported as a uTLS fingerprint")
 	}
 }
 

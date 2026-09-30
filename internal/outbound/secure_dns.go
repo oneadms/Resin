@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/sagernet/sing-box/adapter"
 	C "github.com/sagernet/sing-box/constant"
@@ -37,6 +38,11 @@ type secureDNSTransportSpec struct {
 
 type secureDNSFailoverOptions struct {
 	Upstreams []string `json:"upstreams,omitempty"`
+}
+
+type secureDNSFailoverResult struct {
+	response *mDNS.Msg
+	err      error
 }
 
 type secureDNSFailoverTransport struct {
@@ -327,34 +333,61 @@ func (t *secureDNSFailoverTransport) Exchange(ctx context.Context, message *mDNS
 		return nil, fmt.Errorf("secure dns transport: no upstreams configured")
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	queryName := "<empty query>"
 	if len(message.Question) > 0 {
 		queryName = message.Question[0].Name
 	}
 
-	var attemptErrs []error
+	results := make(chan secureDNSFailoverResult, len(t.upstreamTags))
+	var wg sync.WaitGroup
 	for _, upstreamTag := range t.upstreamTags {
-		upstream, ok := t.manager.Transport(upstreamTag)
-		if !ok || upstream == nil {
-			attemptErrs = append(attemptErrs, fmt.Errorf("%s: transport not found", upstreamTag))
-			continue
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results <- t.exchangeUpstream(ctx, upstreamTag, message)
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
 
-		response, err := upstream.Exchange(ctx, message.Copy())
-		if err == nil && shouldAcceptSecureDNSResponse(response) {
-			return response, nil
+	var attemptErrs []error
+	for result := range results {
+		if result.err == nil && shouldAcceptSecureDNSResponse(result.response) {
+			return result.response, nil
 		}
-		if err == nil {
-			if response == nil {
-				err = errors.New("empty response")
-			} else {
-				err = dns.RcodeError(response.Rcode)
-			}
-		}
-		attemptErrs = append(attemptErrs, fmt.Errorf("%s: %w", upstreamTag, err))
+		attemptErrs = append(attemptErrs, result.err)
 	}
 
 	return nil, fmt.Errorf("secure DNS exchange failed for %s: %w", queryName, errors.Join(attemptErrs...))
+}
+
+func (t *secureDNSFailoverTransport) exchangeUpstream(
+	ctx context.Context,
+	upstreamTag string,
+	message *mDNS.Msg,
+) secureDNSFailoverResult {
+	upstream, ok := t.manager.Transport(upstreamTag)
+	if !ok || upstream == nil {
+		return secureDNSFailoverResult{err: fmt.Errorf("%s: transport not found", upstreamTag)}
+	}
+
+	response, err := upstream.Exchange(ctx, message.Copy())
+	if err == nil && shouldAcceptSecureDNSResponse(response) {
+		return secureDNSFailoverResult{response: response}
+	}
+	if err == nil {
+		if response == nil {
+			err = errors.New("empty response")
+		} else {
+			err = dns.RcodeError(response.Rcode)
+		}
+	}
+	return secureDNSFailoverResult{err: fmt.Errorf("%s: %w", upstreamTag, err)}
 }
 
 func shouldAcceptSecureDNSResponse(response *mDNS.Msg) bool {

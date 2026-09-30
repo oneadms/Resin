@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/endpoint"
@@ -137,6 +138,7 @@ func (b *SingboxBuilder) Build(rawOptions json.RawMessage) (adapter.Outbound, er
 	if err := sJson.UnmarshalContext(b.ctx, rawOptions, &outboundConfig); err != nil {
 		return nil, fmt.Errorf("parse outbound options: %w", err)
 	}
+	normalizeOutboundOptions(&outboundConfig)
 
 	// 2. Create the outbound instance via the registry.
 	logger := b.logFactory.NewLogger("outbound/" + outboundConfig.Type)
@@ -184,6 +186,49 @@ func (b *SingboxBuilder) Build(rawOptions json.RawMessage) (adapter.Outbound, er
 	}
 
 	return ob, nil
+}
+
+// normalizeOutboundOptions applies compatibility fixes required by the
+// sing-box version embedded in Resin.
+func normalizeOutboundOptions(outboundConfig *option.Outbound) {
+	if outboundConfig == nil {
+		return
+	}
+	if outboundConfig.Type == "anytls" {
+		anyTLSOptions, ok := outboundConfig.Options.(*option.AnyTLSOutboundOptions)
+		if ok {
+			// AnyTLS accesses RemoteAddr before a lazy TFO connection is
+			// established, so sing-box rejects this combination at creation time.
+			anyTLSOptions.TCPFastOpen = false
+		}
+	}
+
+	// Some Clash providers use "fingerprint" for a certificate SHA-256 pin.
+	// When that value is imported as a uTLS ClientHello name, sing-box rejects
+	// the entire outbound. Keep uTLS enabled and fall back to its stable default.
+	tlsOptions, ok := outboundConfig.Options.(option.OutboundTLSOptionsWrapper)
+	if !ok {
+		return
+	}
+	tls := tlsOptions.TakeOutboundTLSOptions()
+	if tls == nil || tls.UTLS == nil || !tls.UTLS.Enabled {
+		return
+	}
+	fingerprint := strings.ToLower(strings.TrimSpace(tls.UTLS.Fingerprint))
+	if !isSupportedUTLSFingerprint(fingerprint) {
+		fingerprint = "chrome"
+	}
+	tls.UTLS.Fingerprint = fingerprint
+}
+
+func isSupportedUTLSFingerprint(fingerprint string) bool {
+	switch fingerprint {
+	case "", "chrome", "chrome_psk", "chrome_psk_shuffle", "chrome_padding_psk_shuffle", "chrome_pq", "chrome_pq_psk",
+		"firefox", "edge", "safari", "360", "qq", "ios", "android", "random", "randomized":
+		return true
+	default:
+		return false
+	}
 }
 
 // Remove unregisters a previously built outbound tag from sing-box's manager.
